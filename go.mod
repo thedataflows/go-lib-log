@@ -1,6 +1,6 @@
 module github.com/thedataflows/go-lib-log
 
-go 1.24.3
+go 1.23
 
 require (
 	github.com/goccy/go-yaml v1.17.1
