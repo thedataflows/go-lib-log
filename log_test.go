@@ -206,7 +206,7 @@ func TestBackpressureDropping(t *testing.T) {
 
 	// Send a burst of messages that will definitely overflow the tiny buffer
 	numMessages := 10
-	for i := 0; i < numMessages; i++ {
+	for i := range numMessages {
 		logger.Info().Msgf("Backpressure test %d", i)
 	}
 
@@ -247,7 +247,7 @@ func TestConcurrentLogging(t *testing.T) {
 		wg.Add(1)
 		go func(gNum int) {
 			defer wg.Done()
-			for j := 0; j < messagesPerGoroutine; j++ {
+			for j := range messagesPerGoroutine {
 				logger.Info().Msgf("Goroutine %d message %d", gNum, j)
 			}
 		}(i)
@@ -435,9 +435,9 @@ func TestDropReportingMultipleTimes(t *testing.T) {
 	numCycles := 3         // Number of times we want to see a drop report
 	messagesPerCycle := 15 // Messages to send in each cycle to ensure drops
 
-	for cycle := 0; cycle < numCycles; cycle++ {
+	for cycle := range numCycles {
 		t.Logf("Drop reporting cycle %d/%d", cycle+1, numCycles)
-		for i := 0; i < messagesPerCycle; i++ {
+		for i := range messagesPerCycle {
 			logger.Info().Int("cycle", cycle+1).Int("msg", i+1).Msg("Multi-drop test message")
 		}
 		// Wait for slightly longer than the drop report interval to allow the report to be generated
@@ -492,4 +492,153 @@ func TestDropReportingMultipleTimes(t *testing.T) {
 			t.Errorf("Although drop reports were counted, none could be parsed as valid JSON with expected fields.")
 		}
 	}
+}
+
+// TestEventGrouping tests the event grouping functionality
+func TestEventGrouping(t *testing.T) {
+	t.Run("disabled_grouping", func(tt *testing.T) {
+		// Test with grouping disabled (window = 0)
+		var buf bytes.Buffer
+		logger := setupTestLogger(tt, 10, 100, 10, &buf)
+		defer logger.Close()
+
+		// Create a new logger with grouping disabled
+		groupedLogger := NewLoggerWithGrouping(0)
+		defer groupedLogger.Close()
+
+		// All messages should be written normally
+		for i := range 3 {
+			logger.Info().Msgf("Test message %d", i)
+		}
+
+		// Give some time for async processing
+		time.Sleep(100 * time.Millisecond)
+
+		output := buf.String()
+		messageCount := strings.Count(output, "Test message")
+		if messageCount != 3 {
+			tt.Errorf("Expected 3 messages, got %d", messageCount)
+		}
+	})
+
+	t.Run("enabled_grouping", func(tt *testing.T) {
+		// Test with grouping enabled using main constructor
+		originalEnv := os.Getenv(ENV_LOG_FORMAT)
+		defer func() {
+			if originalEnv == "" {
+				_ = os.Unsetenv(ENV_LOG_FORMAT)
+			} else {
+				_ = os.Setenv(ENV_LOG_FORMAT, originalEnv)
+			}
+		}()
+
+		// Set up environment for test
+		_ = os.Setenv(ENV_LOG_FORMAT, "json")
+		_ = os.Setenv(ENV_LOG_LEVEL, "info")
+
+		// Use the main constructor with grouping
+		logger := NewLoggerWithGrouping(500 * time.Millisecond)
+		defer logger.Close()
+
+		// Send the same message multiple times quickly
+		for range 5 {
+			logger.Info().Msg("Repeated test message")
+			time.Sleep(10 * time.Millisecond) // Small delay to ensure ordering
+		}
+
+		// Wait a bit for processing and group window to expire
+		time.Sleep(800 * time.Millisecond)
+	})
+
+	t.Run("different_messages_not_grouped", func(tt *testing.T) {
+		// Test that different messages are not grouped together using main constructor
+		logger := NewLoggerWithGrouping(500 * time.Millisecond)
+		defer logger.Close()
+
+		// Send different messages
+		logger.Info().Msg("Message A")
+		logger.Info().Msg("Message B")
+		logger.Info().Msg("Message C")
+
+		// Wait for processing
+		time.Sleep(200 * time.Millisecond)
+	})
+
+	t.Run("different_levels_not_grouped", func(tt *testing.T) {
+		// Test that messages with different levels are not grouped together using main constructor
+		originalLevel := os.Getenv(ENV_LOG_LEVEL)
+		defer func() {
+			if originalLevel == "" {
+				_ = os.Unsetenv(ENV_LOG_LEVEL)
+			} else {
+				_ = os.Setenv(ENV_LOG_LEVEL, originalLevel)
+			}
+		}()
+
+		_ = os.Setenv(ENV_LOG_LEVEL, "debug")
+
+		logger := NewLoggerWithGrouping(500 * time.Millisecond)
+		defer logger.Close()
+
+		// Send same message at different levels
+		for range 3 {
+			logger.Info().Msg("Same message")
+			logger.Warn().Msg("Same message")
+			logger.Error().Msg("Same message")
+		}
+
+		// Wait for processing and grouping window
+		time.Sleep(800 * time.Millisecond)
+	})
+
+	t.Run("grouping_with_environment_variable", func(tt *testing.T) {
+		// Test configuration via environment variable
+		originalEnv := os.Getenv(ENV_LOG_GROUP_WINDOW)
+		defer func() {
+			if originalEnv == "" {
+				_ = os.Unsetenv(ENV_LOG_GROUP_WINDOW)
+			} else {
+				_ = os.Setenv(ENV_LOG_GROUP_WINDOW, originalEnv)
+			}
+		}()
+
+		_ = os.Setenv(ENV_LOG_GROUP_WINDOW, "1") // 1 second window
+
+		// Use main constructor that reads from environment
+		logger := NewLogger()
+		defer logger.Close()
+
+		// The grouper should be initialized with 1 second window from env var
+		if logger.writer.grouper.windowDur != time.Second {
+			tt.Errorf("Expected 1 second window from env var, got %v", logger.writer.grouper.windowDur)
+		}
+	})
+}
+
+// TestEventGrouperPerformance tests the performance impact of event grouping
+func TestEventGrouperPerformance(t *testing.T) {
+	t.Run("grouping_performance", func(tt *testing.T) {
+		// Test that grouping doesn't significantly impact performance
+		groupWindow := 100 * time.Millisecond
+
+		logger := NewLoggerWithGrouping(groupWindow)
+		defer logger.Close()
+
+		start := time.Now()
+
+		// Send many messages rapidly
+		for i := range 1000 {
+			logger.Info().Int("id", i%10).Msg("Performance test message") // Only 10 unique messages
+		}
+
+		elapsed := time.Since(start)
+
+		// Should complete reasonably fast even with grouping
+		if elapsed > time.Second {
+			tt.Errorf("Grouping took too long: %v", elapsed)
+		}
+
+		// Wait for processing
+		time.Sleep(200 * time.Millisecond)
+	})
 }

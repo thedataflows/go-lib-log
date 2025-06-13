@@ -84,3 +84,33 @@ func BenchmarkStandardLogger(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkEventGrouping benchmarks the event grouping functionality
+func BenchmarkEventGrouping(b *testing.B) {
+	_ = os.Setenv(ENV_LOG_FORMAT, "json")
+
+	b.Run("with_grouping", func(bb *testing.B) {
+		groupWindow := 100 * time.Millisecond
+		logger := NewLoggerWithGrouping(groupWindow)
+		defer logger.Close()
+
+		bb.ResetTimer()
+		bb.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				logger.Info().Msg("Benchmark grouping")
+			}
+		})
+	})
+
+	b.Run("without_grouping", func(bb *testing.B) {
+		logger := NewLoggerWithGrouping(0) // No grouping
+		defer logger.Close()
+
+		bb.ResetTimer()
+		bb.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				logger.Info().Msg("Benchmark without grouping")
+			}
+		})
+	})
+}

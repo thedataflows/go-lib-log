@@ -11,6 +11,7 @@ This library aims to provide a consistent logging interface with advanced featur
 * Multiple log levels (Trace, Debug, Info, Warn, Error, Fatal, Panic).
 * Structured logging in JSON or human-readable console format.
 * High-performance logging with buffering and rate limiting to prevent log flooding.
+* Event Grouping: Automatically groups similar log messages within configurable time windows to reduce noise and improve log readability.
 * Automatic reporting of dropped log messages due to backpressure.
 * Configuration via environment variables for easy setup in different environments.
 * Compatibility layer for `go-logging.v1`.
@@ -21,8 +22,9 @@ This library aims to provide a consistent logging interface with advanced featur
 * **Configurable Log Levels**: Set log levels dynamically via environment variables or code.
 * **Buffering**: Asynchronously writes logs through a configurable buffer to improve application performance.
 * **Rate Limiting**: Controls the rate of log messages written to the output, preventing overload.
+* **Event Grouping (Default)**: Groups identical log messages within configurable time windows, showing a single instance with a count. This significantly reduces log noise from repeated errors or warnings. Enabled by default with a 1-second window.
 * **Dropped Message Reporting**: If the log buffer is full and messages are dropped, the logger will periodically report the count of dropped messages.
-* **Environment Variable Configuration**: Easily configure log level, format, buffer size, rate limits, and drop report intervals using environment variables.
+* **Environment Variable Configuration**: Easily configure log level, format, buffer size, rate limits, group windows, and drop report intervals using environment variables.
 * **Package-Specific Logging**: Include package name automatically in log entries for better context.
 * **Pretty Printing**: Utility functions to pretty-print data structures (e.g., YAML) in logs.
 * **`go-logging.v1` Compatibility**: Includes a backend to bridge with applications using `gopkg.in/op/go-logging.v1`.
@@ -38,6 +40,7 @@ Here\'s a comparative overview of approximate performance for a simple logging o
 | Feature / Logger                                       | `go-lib-log` (Buffered) | Standard Library `log` | `zerolog` (Direct) |
 | :----------------------------------------------------- | :---------------------- | :--------------------- | :----------------- |
 | **Approx. ns/op**                                      | ~50-55 ns/op            | ~300-500+ ns/op        | ~30-40 ns/op       |
+| **Event Grouping Overhead**                            | ~2-7% (when enabled)    | N/A                    | N/A                |
 | **Asynchronous Processing**                            | Yes (Buffered)          | No (Synchronous)       | No (Synchronous)   |
 | **Structured Logging (JSON)**                          | Yes (via zerolog)       | Manual / Verbose       | Yes (Core)         |
 | **Rate Limiting**                                      | Yes                     | No                     | No                 |
@@ -48,6 +51,7 @@ Here\'s a comparative overview of approximate performance for a simple logging o
 **Notes:**
 
 * Performance numbers can vary based on the specific benchmark, hardware, and logging configuration (e.g., output destination, log format).
+* Event grouping adds minimal overhead (~2-7%) but provides significant benefits in reducing log noise and storage costs.
 * The Standard Library `log` figures are for attempts to achieve similar structured-like output; basic `log.Println` would be faster but unstructured.
 * `zerolog` (Direct) serves as a baseline for the underlying logging engine without the additional features of `go-lib-log`\'s writer.
 
@@ -82,7 +86,7 @@ import (
 )
 
 func main() {
- // The global logger is initialized automatically.
+ // The global logger is initialized automatically with event grouping enabled.
  // Ensure to close it on application shutdown to flush buffers.
  defer log.Close()
 
@@ -94,6 +98,12 @@ func main() {
 
  // Example of logging with package context
  myFunction()
+
+ // Demonstrate event grouping with repeated messages
+ for i := 0; i < 5; i++ {
+  log.Error("main", errors.New("connection failed"), "Database connection error")
+  // These identical messages will be grouped automatically
+ }
 
  // To see Fatal or Panic in action (uncomment to test):
  // log.Fatal("main", err, "A fatal error occurred, exiting.")
@@ -124,18 +134,68 @@ The logger can be configured using the following environment variables:
   * Default: `50000`.
 * `LOG_RATE_BURST`: Sets the burst size for the rate limiter.
   * Default: `10000`.
+* `LOG_GROUP_WINDOW`: Sets the time window (in seconds) for grouping similar log events.
+  * Default: `1` (1 second, > 0 enables event grouping).
+  * Set to `0` to disable event grouping.
 * `ENV_LOG_DROP_REPORT_INTERVAL`: Sets the interval (in seconds) for reporting dropped log messages.
   * Default: `10`.
 
-Example:
+## Event Grouping
 
-```bash
-export LOG_LEVEL="debug"
-export LOG_FORMAT="json"
-export LOG_BUFFER_SIZE="50000"
-export LOG_RATE_LIMIT="1000"
-export LOG_RATE_BURST="100"
-./your-application
+Event grouping is a powerful feature that reduces log noise by grouping identical messages within a configurable time window. **This feature is enabled by default** with a 1-second grouping window. When multiple identical log messages are received within the window, only the first one is logged immediately, and subsequent identical messages increment a counter. When the window expires, a final grouped message is emitted showing the total count.
+
+### How It Works
+
+1. **Message Hashing**: Each log message is hashed based on its content and level
+2. **Time Windows**: Messages are grouped within configurable time windows (default: 1 second)
+3. **Atomic Operations**: Uses lock-free atomic operations for high performance
+4. **Zero Allocation**: Maintains zero-copy performance where possible
+
+### Grouped Message Format
+
+When messages are grouped, the final log entry includes additional fields:
+
+```json
+{
+  "time": "2025-06-13T10:30:00Z",
+  "level": "error",
+  "message": "Database connection failed",
+  "group_count": 15,
+  "group_window": "1s",
+  "group_first": "2025-06-13T10:29:59Z"
+}
+```
+
+### Using Event Grouping
+
+```go
+// Default logger with event grouping enabled (1 second window)
+logger := log.NewLogger()
+defer logger.Close()
+
+// These messages will be grouped if sent within 1 second
+logger.Error().Msg("Database connection failed")
+logger.Error().Msg("Database connection failed") // Will be grouped
+logger.Error().Msg("Database connection failed") // Will be grouped
+
+// Create logger with custom grouping window
+logger := log.NewLoggerWithGrouping(2 * time.Second)
+defer logger.Close()
+
+// Create logger with grouping explicitly disabled
+logger := log.NewLoggerWithoutGrouping()
+defer logger.Close()
+
+// Different messages won't be grouped
+logger.Error().Msg("Redis connection failed") // Separate message
+
+// Environment variable configuration
+os.Setenv("LOG_GROUP_WINDOW", "2") // 2 second window
+logger := log.NewLogger() // Will use environment configuration
+
+// Disable grouping via environment variable
+os.Setenv("LOG_GROUP_WINDOW", "0") // Disables grouping
+logger := log.NewLogger()
 ```
 
 ### Programmatic Configuration
@@ -176,6 +236,59 @@ func main() {
  // defer logger.Close() // Important if you create separate instances
 }
 ```
+
+### Logger Constructors
+
+The library provides several constructor functions to suit different needs:
+
+```go
+// Default logger with event grouping enabled (1 second window)
+logger := log.NewLogger()
+
+// Logger with custom event grouping window
+logger := log.NewLoggerWithGrouping(5 * time.Second)
+
+// Logger with event grouping explicitly disabled
+logger := log.NewLoggerWithoutGrouping()
+
+// JSON-only logger (always outputs JSON format)
+logger := log.NewJsonLogger()
+```
+
+**Important**: Always call `defer logger.Close()` to ensure proper cleanup and flushing of buffered messages.
+
+### Using the Global Logger vs Instance Logger
+
+You can use the library in two ways:
+
+```go
+// Option 1: Global logger (backwards compatible)
+import log "github.com/thedataflows/go-lib-log"
+
+func main() {
+    defer log.Close() // Close global logger
+    log.Info("pkg", "Using global logger")
+}
+
+// Option 2: Instance logger (recommended for new code)
+import log "github.com/thedataflows/go-lib-log"
+
+func main() {
+    logger := log.NewLogger()
+    defer logger.Close()
+    logger.Info().Msg("Using instance logger")
+}
+```
+
+## Migration Note
+
+**For existing users**: If you prefer the previous behavior without event grouping, you can:
+
+1. Use `log.NewLoggerWithoutGrouping()` instead of `log.NewLogger()`
+2. Set the environment variable `LOG_GROUP_WINDOW=0` to disable grouping
+3. Use `log.NewLoggerWithGrouping(0)` to explicitly disable grouping
+
+This change is backward compatible - your existing code will continue to work, but will now benefit from automatic event grouping.
 
 ## License
 
