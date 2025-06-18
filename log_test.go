@@ -500,7 +500,6 @@ func TestEventGrouping(t *testing.T) {
 		// Test with grouping disabled (window = 0)
 		var buf bytes.Buffer
 		logger := setupTestLogger(tt, 10, 100, 10, &buf)
-		defer logger.Close()
 
 		// Create a new logger with grouping disabled
 		groupedLogger := NewLoggerWithGrouping(0)
@@ -511,8 +510,8 @@ func TestEventGrouping(t *testing.T) {
 			logger.Info().Msgf("Test message %d", i)
 		}
 
-		// Give some time for async processing
-		time.Sleep(100 * time.Millisecond)
+		// Close logger to ensure all processing is complete before reading buffer
+		logger.Close()
 
 		output := buf.String()
 		messageCount := strings.Count(output, "Test message")

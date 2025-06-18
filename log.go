@@ -125,11 +125,12 @@ type CustomLogger struct {
 // to handle bursts, dropping messages if the buffer is full and reporting drops.
 // It also supports event grouping to reduce duplicate log noise.
 type BufferedRateLimitedWriter struct {
-	target  io.Writer
-	limiter *rate.Limiter
-	buffer  chan []byte
-	wg      sync.WaitGroup
-	once    sync.Once
+	target    io.Writer
+	targetMux sync.Mutex // Protects concurrent writes to target
+	limiter   *rate.Limiter
+	buffer    chan []byte
+	wg        sync.WaitGroup
+	once      sync.Once
 
 	closed      atomic.Bool   // Changed from bool with mutex
 	closeSignal chan struct{} // Added for shutdown signaling
@@ -209,7 +210,11 @@ func (w *BufferedRateLimitedWriter) startProcessor() {
 		defer w.wg.Done()
 		for data := range w.buffer {
 			_ = w.limiter.Wait(context.Background())
+
+			// Protect concurrent writes to target with mutex
+			w.targetMux.Lock()
 			_, _ = w.target.Write(data)
+			w.targetMux.Unlock()
 		}
 	}()
 }
@@ -256,7 +261,9 @@ func (w *BufferedRateLimitedWriter) startDropReporter() {
 					buf = append(buf, []byte("\n")...)
 
 					// Write directly to target to avoid infinite recursion
+					w.targetMux.Lock()
 					_, _ = w.target.Write(buf)
+					w.targetMux.Unlock()
 				}
 			case <-w.closeSignal:
 				return
@@ -331,7 +338,9 @@ func (w *BufferedRateLimitedWriter) Close() error {
 	// Close the event grouper and emit any pending grouped messages
 	pendingMessages := w.grouper.close()
 	for _, msg := range pendingMessages {
+		w.targetMux.Lock()
 		_, _ = w.target.Write(msg)
+		w.targetMux.Unlock()
 	}
 
 	return nil
