@@ -1,3 +1,57 @@
+// Package log provides a high-performance logging library with advanced features
+// including rate limiting, buffering, event grouping, and configurable output formats.
+//
+// # Buffering Control
+//
+// The library supports both buffered and unbuffered logging modes:
+//
+// Buffered Mode (default):
+//   - Messages are queued in a buffer and processed asynchronously
+//   - High throughput with minimal impact on application performance
+//   - Messages may be dropped if buffer is full (backpressure handling)
+//   - Suitable for high-frequency logging scenarios
+//
+// Unbuffered Mode:
+//   - Messages are written directly to the output with rate limiting
+//   - Immediate writing ensures no message loss due to buffering
+//   - Lower throughput but guaranteed message delivery
+//   - Suitable for critical logging where message loss is unacceptable
+//
+// # Environment Variables
+//
+// The following environment variables control logging behavior:
+//   - LOG_DISABLE_BUFFERING: Set to "true", "1", or "yes" to disable buffering
+//   - LOG_BUFFER_SIZE: Buffer size for buffered mode (default: 100000)
+//   - LOG_RATE_LIMIT: Rate limit in messages per second (default: 50000)
+//   - LOG_RATE_BURST: Burst size for rate limiting (default: 10000)
+//   - LOG_GROUP_WINDOW: Event grouping window in seconds (default: 1)
+//   - LOG_DROP_REPORT_INTERVAL: Drop report interval in seconds (default: 10)
+//   - LOG_LEVEL: Log level (debug, info, warn, error, fatal, panic)
+//   - LOG_FORMAT: Output format (json, console)
+//
+// # Usage Examples
+//
+// Basic usage with default buffered mode:
+//
+//	logger := log.NewLogger()
+//	logger.Info().Msg("This is a buffered log message")
+//	logger.Close() // Flush remaining messages
+//
+// Disable buffering via environment variable:
+//
+//	os.Setenv("LOG_DISABLE_BUFFERING", "true")
+//	logger := log.NewLogger()
+//	logger.Info().Msg("This message is written immediately")
+//
+// Explicitly create unbuffered logger:
+//
+//	logger := log.NewLoggerWithoutBuffering()
+//	logger.Info().Msg("This message is written immediately")
+//
+// Unbuffered with grouping disabled:
+//
+//	logger := log.NewLoggerWithoutBufferingAndGrouping()
+//	logger.Info().Msg("No buffering, no grouping")
 package log
 
 import (
@@ -31,6 +85,8 @@ const (
 	ENV_LOG_DROP_REPORT_INTERVAL = "LOG_DROP_REPORT_INTERVAL" // seconds between drop reports
 	// ENV_LOG_GROUP_WINDOW is the environment variable for the log event grouping window.
 	ENV_LOG_GROUP_WINDOW = "LOG_GROUP_WINDOW" // seconds for event grouping window
+	// ENV_LOG_DISABLE_BUFFERING is the environment variable to disable buffering.
+	ENV_LOG_DISABLE_BUFFERING = "LOG_DISABLE_BUFFERING" // set to "true" to disable buffering
 	// DEFAULT_BUFFER_SIZE is the default buffer size for the logger.
 	DEFAULT_BUFFER_SIZE = 100000 // High throughput: 100K buffer
 	// DEFAULT_RATE_LIMIT is the default rate limit for the logger in messages per second.
@@ -148,6 +204,9 @@ type BufferedRateLimitedWriter struct {
 
 	// Event grouping
 	grouper *eventGrouper
+
+	// Buffering control
+	bufferingDisabled bool
 }
 
 // NewBufferedRateLimitedWriter creates a new BufferedRateLimitedWriter.
@@ -159,11 +218,25 @@ func NewBufferedRateLimitedWriter(target io.Writer, bufferSize int, rateLimit, r
 	return NewBufferedRateLimitedWriterWithGrouping(target, bufferSize, rateLimit, rateBurst, 0)
 }
 
+// NewBufferedRateLimitedWriterWithOptions creates a new BufferedRateLimitedWriter with full configuration options.
+// If bufferingDisabled is true, all messages are written directly to the target with rate limiting only.
+// If groupWindow is positive, that duration is used for grouping.
+// If groupWindow is 0, the default grouping window is used (from environment or DEFAULT_GROUP_WINDOW).
+// If groupWindow is negative, grouping is disabled.
+func NewBufferedRateLimitedWriterWithOptions(target io.Writer, bufferSize int, rateLimit, rateBurst int, groupWindow time.Duration, bufferingDisabled bool) *BufferedRateLimitedWriter {
+	return newBufferedRateLimitedWriter(target, bufferSize, rateLimit, rateBurst, groupWindow, bufferingDisabled)
+}
+
 // NewBufferedRateLimitedWriterWithGrouping creates a new BufferedRateLimitedWriter with event grouping.
 // If groupWindow is positive, that duration is used for grouping.
 // If groupWindow is 0, the default grouping window is used (from environment or DEFAULT_GROUP_WINDOW).
 // If groupWindow is negative, grouping is disabled.
 func NewBufferedRateLimitedWriterWithGrouping(target io.Writer, bufferSize int, rateLimit, rateBurst int, groupWindow time.Duration) *BufferedRateLimitedWriter {
+	return newBufferedRateLimitedWriter(target, bufferSize, rateLimit, rateBurst, groupWindow, false)
+}
+
+// newBufferedRateLimitedWriter is the internal constructor that handles all options.
+func newBufferedRateLimitedWriter(target io.Writer, bufferSize int, rateLimit, rateBurst int, groupWindow time.Duration, bufferingDisabled bool) *BufferedRateLimitedWriter {
 	// Get drop report interval from environment
 	dropReportIntervalSec := DEFAULT_DROP_REPORT_INTERVAL
 	if intervalStr := os.Getenv(ENV_LOG_DROP_REPORT_INTERVAL); intervalStr != "" {
@@ -194,6 +267,7 @@ func NewBufferedRateLimitedWriterWithGrouping(target io.Writer, bufferSize int, 
 		closeSignal:        make(chan struct{}), // Initialize closeSignal
 		dropReportInterval: time.Duration(dropReportIntervalSec) * time.Second,
 		grouper:            newEventGrouper(groupWindow, target),
+		bufferingDisabled:  bufferingDisabled,
 	}
 
 	// Pre-compute static parts of drop report message for performance
@@ -280,11 +354,42 @@ func (w *BufferedRateLimitedWriter) getAndResetDroppedCount() uint64 {
 // It implements io.Writer. If the buffer is full, messages are dropped,
 // and the drop count is incremented.
 // It starts the processor and drop reporter on the first write.
+// If buffering is disabled, writes directly to the target with rate limiting.
 func (w *BufferedRateLimitedWriter) Write(p []byte) (int, error) {
 	if w.closed.Load() { // Use atomic Load
 		return 0, io.ErrClosedPipe
 	}
 
+	// Handle unbuffered mode - write directly to target with rate limiting
+	if w.bufferingDisabled {
+		// Check if this event should be grouped
+		messageToWrite, wasGrouped := w.grouper.shouldGroup(p)
+		if wasGrouped {
+			// Event was grouped (suppressed), but we still report success
+			return len(p), nil
+		}
+
+		if messageToWrite == nil {
+			// Shouldn't happen, but guard against it
+			return len(p), nil
+		}
+
+		// Apply rate limiting
+		_ = w.limiter.Wait(context.Background())
+
+		// Write directly to target with mutex protection
+		w.targetMux.Lock()
+		_, err := w.target.Write(messageToWrite)
+		w.targetMux.Unlock()
+
+		// Return based on original input length, not messageToWrite length
+		if err != nil {
+			return 0, err
+		}
+		return len(p), nil
+	}
+
+	// Buffered mode (existing logic)
 	w.once.Do(func() {
 		w.startProcessor()
 		w.startDropReporter()
@@ -330,7 +435,25 @@ func (w *BufferedRateLimitedWriter) Close() error {
 	// This must be done before closing the buffer so pending messages can be processed
 	pendingMessages := w.grouper.close()
 
-	// Send pending grouped messages through the normal buffer flow
+	// Handle pending messages based on buffering mode
+	if w.bufferingDisabled {
+		// In unbuffered mode, write pending messages directly
+		for _, msg := range pendingMessages {
+			_ = w.limiter.Wait(context.Background())
+			w.targetMux.Lock()
+			_, _ = w.target.Write(msg)
+			w.targetMux.Unlock()
+		}
+
+		close(w.closeSignal) // Signal drop reporter to stop
+
+		// Wait for drop reporter to finish (even in unbuffered mode, we may have drop reporting)
+		w.reportWg.Wait()
+
+		return nil
+	}
+
+	// Buffered mode - send pending grouped messages through the normal buffer flow
 	// This ensures they go through rate limiting and proper processing
 	for _, msg := range pendingMessages {
 		// Make a copy since we need to ensure the message persists
@@ -413,6 +536,12 @@ func getBufferConfig() (bufferSize, rateLimit, rateBurst int) {
 	return bufferSize, rateLimit, rateBurst
 }
 
+// isBufferingDisabled checks if buffering should be disabled based on environment variable.
+func isBufferingDisabled() bool {
+	disableStr := os.Getenv(ENV_LOG_DISABLE_BUFFERING)
+	return disableStr == "true" || disableStr == "1" || disableStr == "yes"
+}
+
 // getFormatBasedOutput determines output writer based on log format
 func getFormatBasedOutput() io.Writer {
 	logFormat, _ := ParseLogFormat(os.Getenv(ENV_LOG_FORMAT))
@@ -443,8 +572,11 @@ func newCustomLogger(output io.Writer) *CustomLogger {
 	}
 	groupWindow := time.Duration(groupWindowSec) * time.Second
 
+	// Check if buffering should be disabled
+	bufferingDisabled := isBufferingDisabled()
+
 	// Create the buffered rate limited writer with event grouping enabled by default
-	bufferedWriter := NewBufferedRateLimitedWriterWithGrouping(output, bufferSize, rateLimit, rateBurst, groupWindow)
+	bufferedWriter := NewBufferedRateLimitedWriterWithOptions(output, bufferSize, rateLimit, rateBurst, groupWindow, bufferingDisabled)
 
 	zl := zerolog.New(bufferedWriter).
 		With().
@@ -516,6 +648,60 @@ func NewLoggerWithoutGrouping() *CustomLogger {
 		Logger:     zl,
 		writer:     bufferedWriter,
 		bufferSize: bufferSize,
+	}
+}
+
+// NewLoggerWithoutBuffering creates a new CustomLogger instance with buffering explicitly disabled.
+// All log messages are written directly to the target with rate limiting only.
+// Event grouping is still enabled by default unless disabled via environment variables.
+func NewLoggerWithoutBuffering() *CustomLogger {
+	output := getFormatBasedOutput()
+	logLevel := getLogLevel()
+	bufferSize, rateLimit, rateBurst := getBufferConfig()
+
+	// Get group window configuration
+	groupWindowSec := DEFAULT_GROUP_WINDOW
+	if windowStr := os.Getenv(ENV_LOG_GROUP_WINDOW); windowStr != "" {
+		if parsed, err := strconv.Atoi(windowStr); err == nil && parsed >= 0 {
+			groupWindowSec = parsed
+		}
+	}
+	groupWindow := time.Duration(groupWindowSec) * time.Second
+
+	// Create the rate limited writer without buffering
+	bufferedWriter := NewBufferedRateLimitedWriterWithOptions(output, bufferSize, rateLimit, rateBurst, groupWindow, true)
+
+	zl := zerolog.New(bufferedWriter).
+		With().
+		Timestamp().
+		Logger().Level(logLevel)
+
+	return &CustomLogger{
+		Logger:     zl,
+		writer:     bufferedWriter,
+		bufferSize: 0, // Set to 0 to indicate unbuffered mode
+	}
+}
+
+// NewLoggerWithoutBufferingAndGrouping creates a new CustomLogger instance with both buffering and grouping disabled.
+// All log messages are written directly to the target with rate limiting only.
+func NewLoggerWithoutBufferingAndGrouping() *CustomLogger {
+	output := getFormatBasedOutput()
+	logLevel := getLogLevel()
+	bufferSize, rateLimit, rateBurst := getBufferConfig()
+
+	// Create the rate limited writer without buffering and grouping
+	bufferedWriter := NewBufferedRateLimitedWriterWithOptions(output, bufferSize, rateLimit, rateBurst, -1, true)
+
+	zl := zerolog.New(bufferedWriter).
+		With().
+		Timestamp().
+		Logger().Level(logLevel)
+
+	return &CustomLogger{
+		Logger:     zl,
+		writer:     bufferedWriter,
+		bufferSize: 0, // Set to 0 to indicate unbuffered mode
 	}
 }
 

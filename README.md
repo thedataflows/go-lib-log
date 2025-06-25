@@ -134,6 +134,10 @@ The logger can be configured using the following environment variables:
   * Default: `50000`.
 * `LOG_RATE_BURST`: Sets the burst size for the rate limiter.
   * Default: `10000`.
+* `LOG_DISABLE_BUFFERING`: Disables buffering and writes log messages directly to output.
+  * Supported values: `true`, `1`, `yes` (to disable buffering).
+  * Default: `false` (buffering enabled).
+  * When disabled, messages are written immediately with rate limiting only.
 * `LOG_GROUP_WINDOW`: Sets the time window (in seconds) for grouping similar log events.
   * Default: `1` (1 second, > 0 enables event grouping).
   * Set to `0` to disable event grouping.
@@ -197,6 +201,78 @@ logger := log.NewLogger() // Will use environment configuration
 os.Setenv("LOG_GROUP_WINDOW", "0") // Disables grouping
 logger := log.NewLogger()
 ```
+
+## Buffering Control
+
+The library supports both buffered and unbuffered logging modes to suit different performance and reliability requirements:
+
+### Buffered Mode (Default)
+
+In buffered mode, log messages are queued in an internal buffer and processed asynchronously by a background goroutine. This provides:
+
+* **High Performance**: Minimal impact on application performance
+* **High Throughput**: Can handle burst logging scenarios efficiently
+* **Backpressure Handling**: Messages are dropped if buffer is full, with periodic drop reports
+
+```go
+// Default buffered logger
+logger := log.NewLogger()
+defer logger.Close() // Important: ensures all buffered messages are flushed
+
+logger.Info().Msg("This message goes to the buffer first")
+```
+
+### Unbuffered Mode
+
+In unbuffered mode, log messages are written directly to the output with rate limiting only. This provides:
+
+* **Immediate Writing**: Messages appear in logs immediately
+* **No Message Loss**: No buffering means no risk of losing messages due to buffer overflow
+* **Lower Throughput**: Direct I/O can impact application performance under high load
+
+#### Enable via Environment Variable
+
+```bash
+export LOG_DISABLE_BUFFERING=true
+# or
+export LOG_DISABLE_BUFFERING=1
+# or
+export LOG_DISABLE_BUFFERING=yes
+```
+
+```go
+// Will use unbuffered mode due to environment variable
+logger := log.NewLogger()
+logger.Info().Msg("This message is written immediately")
+```
+
+#### Enable Programmatically
+
+```go
+// Explicitly create unbuffered logger
+logger := log.NewLoggerWithoutBuffering()
+logger.Info().Msg("This message is written immediately")
+
+// Unbuffered with event grouping disabled
+logger := log.NewLoggerWithoutBufferingAndGrouping()
+logger.Info().Msg("Immediate write, no grouping")
+```
+
+### When to Use Each Mode
+
+**Use Buffered Mode (Default) When:**
+
+* High logging throughput is required
+* Application performance is critical
+* Some message loss is acceptable under extreme load
+* Logging is primarily for debugging/monitoring
+
+**Use Unbuffered Mode When:**
+
+* Every log message is critical (e.g., audit logs, financial transactions)
+* Immediate log visibility is required
+* Debugging scenarios where timing is important
+* Lower logging volume applications
 
 ### Programmatic Configuration
 

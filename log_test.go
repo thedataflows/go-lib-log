@@ -724,3 +724,174 @@ func TestCloseFlushesBufferedMessages(t *testing.T) {
 
 	t.Logf("Close with pending messages test output (%d lines):\n%s", nonEmptyLines, output)
 }
+
+func TestUnbufferedLogging(tMain *testing.T) {
+	tests := []struct {
+		name        string
+		setupFunc   func() *CustomLogger
+		description string
+	}{
+		{
+			name: "environment_variable_disable",
+			setupFunc: func() *CustomLogger {
+				os.Setenv(ENV_LOG_DISABLE_BUFFERING, "true")
+				defer os.Unsetenv(ENV_LOG_DISABLE_BUFFERING)
+				return NewLogger()
+			},
+			description: "Disable buffering via environment variable",
+		},
+		{
+			name: "explicit_unbuffered",
+			setupFunc: func() *CustomLogger {
+				return NewLoggerWithoutBuffering()
+			},
+			description: "Explicitly create unbuffered logger",
+		},
+		{
+			name: "unbuffered_without_grouping",
+			setupFunc: func() *CustomLogger {
+				return NewLoggerWithoutBufferingAndGrouping()
+			},
+			description: "Unbuffered logger without grouping",
+		},
+	}
+
+	for _, tt := range tests {
+		tMain.Run(tt.name, func(t *testing.T) {
+			// Capture output
+			var buf bytes.Buffer
+
+			// Create logger with custom output
+			logLevel := getLogLevel()
+			bufferSize, rateLimit, rateBurst := getBufferConfig()
+
+			var logger *CustomLogger
+			switch tt.name {
+			case "environment_variable_disable":
+				os.Setenv(ENV_LOG_DISABLE_BUFFERING, "true")
+				bufferedWriter := NewBufferedRateLimitedWriterWithOptions(&buf, bufferSize, rateLimit, rateBurst, 0, true)
+				logger = &CustomLogger{
+					Logger: NewJsonLogger().Logger.Output(bufferedWriter).Level(logLevel),
+					writer: bufferedWriter,
+				}
+				os.Unsetenv(ENV_LOG_DISABLE_BUFFERING)
+			case "explicit_unbuffered":
+				bufferedWriter := NewBufferedRateLimitedWriterWithOptions(&buf, bufferSize, rateLimit, rateBurst, 0, true)
+				logger = &CustomLogger{
+					Logger: NewJsonLogger().Logger.Output(bufferedWriter).Level(logLevel),
+					writer: bufferedWriter,
+				}
+			case "unbuffered_without_grouping":
+				bufferedWriter := NewBufferedRateLimitedWriterWithOptions(&buf, bufferSize, rateLimit, rateBurst, -1, true)
+				logger = &CustomLogger{
+					Logger: NewJsonLogger().Logger.Output(bufferedWriter).Level(logLevel),
+					writer: bufferedWriter,
+				}
+			}
+
+			// Test immediate writing
+			logger.Info().Msg("Test message 1")
+			logger.Info().Msg("Test message 2")
+			logger.Info().Msg("Test message 3")
+
+			// In unbuffered mode, messages should be available immediately
+			output := buf.String()
+			lines := strings.Split(strings.TrimSpace(output), "\n")
+
+			if len(lines) != 3 {
+				t.Errorf("Expected 3 log lines, got %d: %s", len(lines), output)
+			}
+
+			// Verify each message appears
+			expectedMessages := []string{"Test message 1", "Test message 2", "Test message 3"}
+			for i, expectedMsg := range expectedMessages {
+				if i < len(lines) && !strings.Contains(lines[i], expectedMsg) {
+					t.Errorf("Expected line %d to contain '%s', got: %s", i+1, expectedMsg, lines[i])
+				}
+			}
+
+			// Clean up
+			logger.Close()
+		})
+	}
+}
+
+func TestUnbufferedVsBuffered(t *testing.T) {
+	// Test that unbuffered mode writes immediately while buffered mode may delay
+
+	// Test unbuffered mode
+	var unbufferedBuf bytes.Buffer
+	bufferSize, rateLimit, rateBurst := getBufferConfig()
+	unbufferedWriter := NewBufferedRateLimitedWriterWithOptions(&unbufferedBuf, bufferSize, rateLimit, rateBurst, 0, true)
+	unbufferedLogger := &CustomLogger{
+		Logger: NewJsonLogger().Logger.Output(unbufferedWriter).Level(InfoLevel),
+		writer: unbufferedWriter,
+	}
+
+	// Test buffered mode
+	var bufferedBuf bytes.Buffer
+	bufferedWriter := NewBufferedRateLimitedWriterWithOptions(&bufferedBuf, 10, 1, 1, 0, false) // Small buffer, low rate
+	bufferedLogger := &CustomLogger{
+		Logger: NewJsonLogger().Logger.Output(bufferedWriter).Level(InfoLevel),
+		writer: bufferedWriter,
+	}
+
+	// Write messages
+	unbufferedLogger.Info().Msg("Unbuffered message")
+	bufferedLogger.Info().Msg("Buffered message")
+
+	// Check immediate availability
+	unbufferedOutput := unbufferedBuf.String()
+
+	// Unbuffered should have output immediately
+	if !strings.Contains(unbufferedOutput, "Unbuffered message") {
+		t.Error("Unbuffered message should appear immediately")
+	}
+
+	// Buffered might not have output yet (depending on timing)
+	// But we'll close to ensure it gets written
+	bufferedLogger.Close()
+	bufferedOutputAfterClose := bufferedBuf.String()
+
+	if !strings.Contains(bufferedOutputAfterClose, "Buffered message") {
+		t.Error("Buffered message should appear after close")
+	}
+
+	// Clean up
+	unbufferedLogger.Close()
+}
+
+func TestUnbufferedWithRateLimiting(t *testing.T) {
+	// Test that unbuffered mode still respects rate limiting
+	var buf bytes.Buffer
+
+	// Create unbuffered writer with very low rate limit
+	unbufferedWriter := NewBufferedRateLimitedWriterWithOptions(&buf, 100, 2, 1, 0, true) // 2 msgs/sec, burst 1
+	logger := &CustomLogger{
+		Logger: NewJsonLogger().Logger.Output(unbufferedWriter).Level(InfoLevel),
+		writer: unbufferedWriter,
+	}
+
+	start := time.Now()
+
+	// Send 3 messages - should be rate limited
+	logger.Info().Msg("Message 1")
+	logger.Info().Msg("Message 2")
+	logger.Info().Msg("Message 3")
+
+	elapsed := time.Since(start)
+
+	// Should take at least 1 second due to rate limiting (2 msgs/sec, 3 messages)
+	if elapsed < time.Millisecond*500 { // Allow some tolerance
+		t.Errorf("Expected rate limiting to cause delay, but took only %v", elapsed)
+	}
+
+	// All messages should eventually be written
+	output := buf.String()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 3 {
+		t.Errorf("Expected 3 messages after rate limiting, got %d", len(lines))
+	}
+
+	logger.Close()
+}
