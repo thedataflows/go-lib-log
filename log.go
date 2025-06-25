@@ -326,6 +326,30 @@ func (w *BufferedRateLimitedWriter) Close() error {
 		return nil // Already closed or closing
 	}
 
+	// Close the event grouper first to get any pending grouped messages
+	// This must be done before closing the buffer so pending messages can be processed
+	pendingMessages := w.grouper.close()
+
+	// Send pending grouped messages through the normal buffer flow
+	// This ensures they go through rate limiting and proper processing
+	for _, msg := range pendingMessages {
+		// Make a copy since we need to ensure the message persists
+		msgCopy := make([]byte, len(msg))
+		copy(msgCopy, msg)
+
+		// Try to send to buffer, but don't block if buffer is full
+		select {
+		case w.buffer <- msgCopy:
+			// Successfully queued
+		default:
+			// Buffer full, write directly with rate limiting and mutex protection
+			_ = w.limiter.Wait(context.Background())
+			w.targetMux.Lock()
+			_, _ = w.target.Write(msgCopy)
+			w.targetMux.Unlock()
+		}
+	}
+
 	close(w.closeSignal) // Signal drop reporter to stop
 
 	// Close the buffer and wait for processor to finish
@@ -334,14 +358,6 @@ func (w *BufferedRateLimitedWriter) Close() error {
 
 	// Wait for drop reporter to finish
 	w.reportWg.Wait()
-
-	// Close the event grouper and emit any pending grouped messages
-	pendingMessages := w.grouper.close()
-	for _, msg := range pendingMessages {
-		w.targetMux.Lock()
-		_, _ = w.target.Write(msg)
-		w.targetMux.Unlock()
-	}
 
 	return nil
 }
@@ -618,7 +634,7 @@ func (eg *eventGrouper) shouldGroup(data []byte) ([]byte, bool) {
 		newWindow.count.Store(1)
 
 		// Create grouped message from expired window
-		groupedMsg := eg.createGroupedMessage(window, now)
+		groupedMsg := eg.createGroupedMessage(window)
 
 		// Try to replace the old window with the new one
 		// If another goroutine replaced it, that's fine - we still emit the grouped message
@@ -645,7 +661,7 @@ func (eg *eventGrouper) shouldGroup(data []byte) ([]byte, bool) {
 }
 
 // createGroupedMessage creates a grouped message showing the count.
-func (eg *eventGrouper) createGroupedMessage(window *eventWindow, now time.Time) []byte {
+func (eg *eventGrouper) createGroupedMessage(window *eventWindow) []byte {
 	count := window.count.Load()
 	if count <= 1 {
 		return window.message
@@ -711,7 +727,7 @@ func (eg *eventGrouper) performCleanup() {
 		if now.Sub(window.firstSeen) > eg.windowDur {
 			// Create grouped message for expired window if it has multiple events
 			if window.count.Load() > 1 {
-				groupedMsg := eg.createGroupedMessage(window, now)
+				groupedMsg := eg.createGroupedMessage(window)
 				expiredMessages = append(expiredMessages, groupedMsg)
 			}
 			// Delete expired window
@@ -735,11 +751,10 @@ func (eg *eventGrouper) close() [][]byte {
 
 	if eg.windowDur > 0 {
 		// Collect all pending grouped messages before shutdown
-		now := time.Now()
 		eg.events.Range(func(key, value interface{}) bool {
 			window := value.(*eventWindow)
 			if window.count.Load() > 1 {
-				groupedMsg := eg.createGroupedMessage(window, now)
+				groupedMsg := eg.createGroupedMessage(window)
 				pendingMessages = append(pendingMessages, groupedMsg)
 			}
 			return true

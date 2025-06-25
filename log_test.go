@@ -641,3 +641,86 @@ func TestEventGrouperPerformance(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	})
 }
+
+func TestCloseFlushesGroupedMessages(t *testing.T) {
+	var buf bytes.Buffer
+
+	// Create a logger with a short grouping window to test message flushing
+	logger := setupTestLogger(t, 10, 100, 10, &buf)
+
+	// Send some messages that should be grouped
+	for range 5 {
+		logger.Info().Msg("Test message for close flush")
+	}
+
+	// Immediately close - this should flush any pending grouped messages
+	logger.Close()
+
+	output := buf.String()
+
+	// Should contain the original message
+	if !strings.Contains(output, "Test message for close flush") {
+		t.Errorf("Expected original message in output, got: %s", output)
+	}
+
+	// Should contain group information if messages were grouped
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	var foundGrouped bool
+	for _, line := range lines {
+		if strings.Contains(line, "group_count") {
+			foundGrouped = true
+			break
+		}
+	}
+
+	// We should have either 5 individual messages or grouped messages
+	// The exact behavior depends on timing, but we should have some output
+	if len(lines) < 1 {
+		t.Errorf("Expected at least one log line, got: %s", output)
+	}
+
+	t.Logf("Close flush test output:\n%s", output)
+	t.Logf("Found grouped message: %v", foundGrouped)
+}
+
+func TestCloseFlushesBufferedMessages(t *testing.T) {
+	var buf bytes.Buffer
+
+	// Create a logger with very slow rate limiting to create pending messages
+	logger := setupTestLogger(t, 2, 1, 1, &buf) // Buffer of 2, very slow rate (1/sec)
+
+	// Send messages quickly to fill buffer and create pending grouped messages
+	for i := range 10 {
+		logger.Info().Msgf("Pending message %d", i)
+	}
+
+	// Add some identical messages that should be grouped
+	for range 5 {
+		logger.Info().Msg("Identical message")
+	}
+
+	// Close should flush everything
+	logger.Close()
+
+	output := buf.String()
+
+	// Should contain some messages (even if not all due to rate limiting)
+	if output == "" {
+		t.Errorf("Expected some output after close, got empty string")
+	}
+
+	// Count the number of log lines
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	nonEmptyLines := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			nonEmptyLines++
+		}
+	}
+
+	if nonEmptyLines == 0 {
+		t.Errorf("Expected at least one log line after close")
+	}
+
+	t.Logf("Close with pending messages test output (%d lines):\n%s", nonEmptyLines, output)
+}

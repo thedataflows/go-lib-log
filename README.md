@@ -255,7 +255,47 @@ logger := log.NewLoggerWithoutGrouping()
 logger := log.NewJsonLogger()
 ```
 
-**Important**: Always call `defer logger.Close()` to ensure proper cleanup and flushing of buffered messages.
+## Important: Close() Method
+
+**Always call `Close()` on your logger instances** to ensure proper cleanup and message flushing:
+
+```go
+logger := log.NewLogger()
+defer logger.Close() // Critical for proper cleanup
+```
+
+The `Close()` method performs several important operations:
+
+1. **Flushes Pending Grouped Messages**: Any messages waiting in the event grouper are immediately flushed
+2. **Processes Buffered Messages**: All messages in the internal buffer are processed through rate limiting
+3. **Stops Background Goroutines**: Cleanly shuts down the processor and drop reporter goroutines
+4. **Prevents Message Loss**: Ensures no messages are lost during application shutdown
+
+### Close() Behavior
+
+* **Thread-Safe**: Can be called multiple times safely (subsequent calls are no-ops)
+* **Blocking**: Will wait for all pending messages to be processed
+* **Rate-Limited**: Pending grouped messages go through normal rate limiting during flush
+* **Atomic**: Uses atomic operations to prevent race conditions during shutdown
+
+### Example with Proper Cleanup
+
+```go
+func main() {
+    logger := log.NewLogger()
+    defer logger.Close() // Ensures all messages are flushed
+
+    // Send many identical messages - these will be grouped
+    for i := 0; i < 100; i++ {
+        logger.Error().Msg("Database connection failed")
+    }
+
+    // Close() will flush the grouped message before exiting
+    // Without Close(), the grouped message might be lost
+}
+```
+
+**Note**: The global logger used by package-level functions (`log.Info()`, `log.Error()`, etc.) should also be closed with `log.Close()` for proper cleanup.
 
 ### Using the Global Logger vs Instance Logger
 
