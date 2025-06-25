@@ -65,32 +65,35 @@ func IsValidLogFormat(s string) bool {
 	return false
 }
 
-// SetLoggerLogFormat sets the log format for the global Logger.
+// SetGlobalLoggerLogFormat sets the log format for the global Logger.
 // It parses the provided logFormat string and updates the Logger's
 // underlying writer to either a console writer or a JSON writer.
+// This preserves all other configuration settings of the global logger.
 // Returns an error if the logFormat string is invalid.
-func SetLoggerLogFormat(logFormat string) error {
+func SetGlobalLoggerLogFormat(logFormat string) error {
 	format, err := ParseLogFormat(logFormat)
 	if err != nil {
 		return err
 	}
 
-	// Close the current logger's writer to clean up resources
-	Logger.Close()
+	globalConfigMutex.Lock()
+	defer globalConfigMutex.Unlock()
 
-	// Create a new logger with the desired format and replace the global Logger's components
-	var newLogger *CustomLogger
-	switch format {
-	case LOG_FORMAT_JSON:
-		newLogger = NewLogger().AsJSON().Build()
-	default:
-		newLogger = NewLogger().Build()
+	// Close the current logger's writer to clean up resources
+	if currentLogger := globalLogger.Load(); currentLogger != nil {
+		currentLogger.Close()
 	}
 
-	// Replace the Logger's components with the new logger's components
-	Logger.Logger = newLogger.Logger
-	Logger.writer = newLogger.writer
-	Logger.bufferSize = newLogger.bufferSize
+	// Update the global builder's format setting and rebuild
+	switch format {
+	case LOG_FORMAT_JSON:
+		globalLoggerBuilder.forceJSON = true
+	default:
+		globalLoggerBuilder.forceJSON = false
+	}
+
+	// Rebuild the logger with preserved settings
+	globalLogger.Store(globalLoggerBuilder.Build())
 
 	return nil
 }
