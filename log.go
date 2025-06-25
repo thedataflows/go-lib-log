@@ -111,8 +111,6 @@ const (
 )
 
 var (
-	// Logger is the global instance of the CustomLogger.
-	Logger = NewLogger().Build()
 	// ParseLevel parses a string into a zerolog.Level. It's a convenience wrapper around zerolog.ParseLevel.
 	ParseLevel = zerolog.ParseLevel
 
@@ -489,8 +487,8 @@ func (l *CustomLogger) Close() {
 	}
 }
 
-// SetLogger replaces the underlying zerolog.Logger instance in the CustomLogger.
-func (l *CustomLogger) SetLogger(logger zerolog.Logger) {
+// SetZerologLogger replaces the underlying zerolog.Logger instance in the CustomLogger.
+func (l *CustomLogger) SetZerologLogger(logger zerolog.Logger) {
 	l.Logger = logger
 }
 
@@ -500,12 +498,6 @@ func (l *CustomLogger) Flush() {
 	if l.writer != nil {
 		l.writer.Flush()
 	}
-}
-
-// Flush ensures all buffered messages in the global Logger are written to the output.
-// This is useful when you want to force immediate output without closing the logger.
-func Flush() {
-	Logger.Flush()
 }
 
 // getLogLevel parses and validates the log level from environment
@@ -543,28 +535,6 @@ func PreferredWriter() io.Writer {
 		new(bytes.Buffer),
 		os.Stderr,
 	)
-}
-
-// SetLoggerLogLevel sets the global log level for the default Logger.
-// If the provided level string is empty, it defaults to InfoLevel.
-// It returns an error if the level string is invalid.
-func SetLoggerLogLevel(level string) error {
-	if len(level) == 0 {
-		level = InfoLevel.String()
-	}
-	parsedLevel, err := ParseLevel(level)
-	if err != nil {
-		return err
-	}
-	// Update the underlying zerolog.Logger instance
-	Logger.Logger = Logger.Logger.Level(parsedLevel)
-	return nil
-}
-
-// Close closes the global Logger instance, ensuring cleanup of its resources.
-// This should be called when the application is shutting down to flush any buffered logs.
-func Close() {
-	Logger.Close()
 }
 
 // Hash computes the hash of the given byte slice using the FNV-1a algorithm.

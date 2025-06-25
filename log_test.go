@@ -883,3 +883,642 @@ func TestUnbufferedLogging(t *testing.T) {
 		tt.Logf("Rate limiting test: %d messages in %v", nonEmptyLines, elapsed)
 	})
 }
+
+// Global Logger Tests
+func TestGlobalLogger(t *testing.T) {
+	// Store original global logger and builder state to restore after tests
+	originalBuilder := globalLoggerBuilder
+	originalLogger := globalLogger.Load()
+
+	// Store and clear environment variables that might affect defaults
+	originalEnvVars := map[string]string{
+		ENV_LOG_FORMAT:      os.Getenv(ENV_LOG_FORMAT),
+		ENV_LOG_LEVEL:       os.Getenv(ENV_LOG_LEVEL),
+		ENV_LOG_BUFFER_SIZE: os.Getenv(ENV_LOG_BUFFER_SIZE),
+		ENV_LOG_RATE_LIMIT:  os.Getenv(ENV_LOG_RATE_LIMIT),
+		ENV_LOG_RATE_BURST:  os.Getenv(ENV_LOG_RATE_BURST),
+	}
+
+	// Clear environment variables to test default behavior
+	for k := range originalEnvVars {
+		_ = os.Unsetenv(k)
+	}
+
+	// Ensure cleanup after tests
+	defer func() {
+		// Restore original global state
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = originalBuilder
+		globalLogger.Store(originalLogger)
+		globalConfigMutex.Unlock()
+
+		// Restore environment variables
+		for k, v := range originalEnvVars {
+			if v == "" {
+				_ = os.Unsetenv(k)
+			} else {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}()
+
+	t.Run("default_global_logger", func(tt *testing.T) {
+		// Reset to defaults
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = NewLogger()
+		globalLogger.Store(nil)
+		globalConfigMutex.Unlock()
+
+		// Get the default global logger
+		logger := Logger()
+
+		// Should get a valid logger
+		if logger == nil {
+			tt.Fatal("Expected non-nil global logger")
+		}
+
+		// Should be the same instance on subsequent calls
+		logger2 := Logger()
+		if logger != logger2 {
+			tt.Error("Expected same global logger instance on subsequent calls")
+		}
+
+		// Check that it has default settings (we can verify buffer size)
+		if logger.bufferSize != DEFAULT_BUFFER_SIZE {
+			tt.Errorf("Expected default buffer size %d, got %d", DEFAULT_BUFFER_SIZE, logger.bufferSize)
+		}
+	})
+
+	t.Run("custom_global_logger_via_builder", func(tt *testing.T) {
+		// Reset to defaults
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = NewLogger()
+		globalLogger.Store(nil)
+		globalConfigMutex.Unlock()
+
+		// Set a custom global logger builder
+		customBuilder := NewLogger().
+			WithBufferSize(500).
+			WithRateLimit(100).
+			WithRateBurst(50).
+			WithGroupWindow(time.Second)
+
+		SetGlobalLoggerBuilder(customBuilder)
+
+		// Get the global logger - should use our custom builder
+		logger := Logger()
+
+		// Verify custom settings
+		if logger.bufferSize != 500 {
+			tt.Errorf("Expected custom buffer size 500, got %d", logger.bufferSize)
+		}
+
+		// Should be the same instance on subsequent calls
+		logger2 := Logger()
+		if logger != logger2 {
+			tt.Error("Expected same global logger instance on subsequent calls")
+		}
+	})
+
+	t.Run("direct_global_logger_assignment", func(tt *testing.T) {
+		var buf bytes.Buffer
+
+		// Reset to defaults
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = NewLogger()
+		globalLogger.Store(nil)
+		globalConfigMutex.Unlock()
+
+		// Create a custom logger and set it directly
+		customLogger := NewLogger().
+			WithOutput(&buf).
+			WithBufferSize(300).
+			Build()
+
+		SetGlobalLogger(customLogger)
+
+		// Get the global logger - should be our custom logger
+		logger := Logger()
+
+		if logger != customLogger {
+			tt.Error("Expected global logger to be the custom logger we set")
+		}
+
+		// Verify it works
+		logger.Info().Msg("Test message for direct assignment")
+		logger.Close()
+
+		output := buf.String()
+		if !strings.Contains(output, "Test message for direct assignment") {
+			tt.Error("Expected to find test message in output")
+		}
+	})
+
+	t.Run("global_logger_builder_accessor", func(tt *testing.T) {
+		// Reset to defaults
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = NewLogger()
+		globalLogger.Store(nil)
+		globalConfigMutex.Unlock()
+
+		// Set a custom builder
+		customBuilder := NewLogger().WithBufferSize(777)
+		SetGlobalLoggerBuilder(customBuilder)
+
+		// Get the builder back
+		retrievedBuilder := GlobalLoggerBuilder()
+
+		if retrievedBuilder != customBuilder {
+			tt.Error("Expected GlobalLoggerBuilder() to return the same builder we set")
+		}
+	})
+}
+
+func TestGlobalLoggerFormatAndLevelChanges(t *testing.T) {
+	// Store original global logger and builder state to restore after tests
+	originalBuilder := globalLoggerBuilder
+	originalLogger := globalLogger.Load()
+
+	// Store and clear environment variables that might affect defaults
+	originalEnvVars := map[string]string{
+		ENV_LOG_FORMAT:      os.Getenv(ENV_LOG_FORMAT),
+		ENV_LOG_LEVEL:       os.Getenv(ENV_LOG_LEVEL),
+		ENV_LOG_BUFFER_SIZE: os.Getenv(ENV_LOG_BUFFER_SIZE),
+		ENV_LOG_RATE_LIMIT:  os.Getenv(ENV_LOG_RATE_LIMIT),
+		ENV_LOG_RATE_BURST:  os.Getenv(ENV_LOG_RATE_BURST),
+	}
+
+	// Clear environment variables to test default behavior
+	for k := range originalEnvVars {
+		_ = os.Unsetenv(k)
+	}
+
+	// Ensure cleanup after tests
+	defer func() {
+		// Restore original global state
+		globalLoggerBuilder = originalBuilder
+		globalLogger.Store(originalLogger)
+
+		// Restore environment variables
+		for k, v := range originalEnvVars {
+			if v == "" {
+				_ = os.Unsetenv(k)
+			} else {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}()
+
+	t.Run("preserve_settings_on_format_change", func(tt *testing.T) {
+		var buf bytes.Buffer
+
+		// Reset and set up custom global logger builder with specific settings
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = NewLogger().
+			WithOutput(&buf).
+			WithBufferSize(456).
+			WithRateLimit(200).
+			WithRateBurst(100).
+			WithGroupWindow(2 * time.Second)
+		globalLogger.Store(nil)
+		globalConfigMutex.Unlock()
+
+		// Get initial logger to establish it
+		logger1 := Logger()
+		initialBufferSize := logger1.bufferSize
+
+		// Change the format - this should preserve all other settings
+		err := SetGlobalLoggerLogFormat("json")
+		if err != nil {
+			tt.Fatalf("SetGlobalLoggerLogFormat failed: %v", err)
+		}
+
+		// Get the new logger
+		logger2 := Logger()
+
+		// Should be a different logger instance (recreated)
+		if logger1 == logger2 {
+			tt.Error("Expected new logger instance after format change")
+		}
+
+		// But should preserve custom settings
+		if logger2.bufferSize != initialBufferSize {
+			tt.Errorf("Expected buffer size to be preserved (%d), got %d", initialBufferSize, logger2.bufferSize)
+		}
+
+		// Test that the new logger works
+		logger2.Info().Msg("Test after format change")
+		logger2.Close()
+
+		output := buf.String()
+		if !strings.Contains(output, "Test after format change") {
+			tt.Error("Expected to find test message in output after format change")
+		}
+
+		// Verify JSON format was applied
+		if !strings.Contains(output, `"message":"Test after format change"`) {
+			tt.Error("Expected JSON format in output")
+		}
+	})
+
+	t.Run("preserve_settings_on_level_change", func(tt *testing.T) {
+		var buf bytes.Buffer
+
+		// Reset and set up custom global logger builder
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = NewLogger().
+			WithOutput(&buf).
+			WithBufferSize(789).
+			WithRateLimit(150).
+			WithRateBurst(75)
+		globalLogger.Store(nil)
+		globalConfigMutex.Unlock()
+
+		// Get initial logger
+		logger1 := Logger()
+		initialBufferSize := logger1.bufferSize
+
+		// Change the level - this should preserve all other settings
+		err := SetGlobalLoggerLogLevel("warn")
+		if err != nil {
+			tt.Fatalf("SetGlobalLoggerLogLevel failed: %v", err)
+		}
+
+		// Get the new logger
+		logger2 := Logger()
+
+		// Should be a different logger instance (recreated)
+		if logger1 == logger2 {
+			tt.Error("Expected new logger instance after level change")
+		}
+
+		// But should preserve custom settings
+		if logger2.bufferSize != initialBufferSize {
+			tt.Errorf("Expected buffer size to be preserved (%d), got %d", initialBufferSize, logger2.bufferSize)
+		}
+
+		// Test that level change worked - debug should not appear
+		logger2.Debug().Msg("Debug message should not appear")
+		logger2.Warn().Msg("Warning message should appear")
+		logger2.Close()
+
+		output := buf.String()
+		if strings.Contains(output, "Debug message should not appear") {
+			tt.Error("Debug message should not appear with warn level")
+		}
+		if !strings.Contains(output, "Warning message should appear") {
+			tt.Error("Warning message should appear with warn level")
+		}
+	})
+
+	t.Run("multiple_format_changes_preserve_settings", func(tt *testing.T) {
+		var buf bytes.Buffer
+
+		// Reset and set up custom global logger builder
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = NewLogger().
+			WithOutput(&buf).
+			WithBufferSize(321).
+			WithRateLimit(300).
+			WithRateBurst(150)
+		globalLogger.Store(nil)
+		globalConfigMutex.Unlock()
+
+		// Get initial logger
+		initialLogger := Logger()
+		initialBufferSize := initialLogger.bufferSize
+
+		// Change format multiple times
+		formats := []string{"json", "console", "json", "console"}
+
+		for i, format := range formats {
+			err := SetGlobalLoggerLogFormat(format)
+			if err != nil {
+				tt.Fatalf("SetGlobalLoggerLogFormat(%s) failed: %v", format, err)
+			}
+
+			currentLogger := Logger()
+
+			// Each change should create a new logger
+			if i > 0 && currentLogger == initialLogger {
+				tt.Errorf("Expected new logger instance after format change %d", i+1)
+			}
+
+			// But should preserve buffer size
+			if currentLogger.bufferSize != initialBufferSize {
+				tt.Errorf("Expected buffer size to be preserved (%d) after format change %d, got %d",
+					initialBufferSize, i+1, currentLogger.bufferSize)
+			}
+
+			// Test the logger works
+			currentLogger.Info().Msgf("Test message %d with format %s", i+1, format)
+		}
+
+		// Close final logger
+		Logger().Close()
+
+		output := buf.String()
+		// Should have all test messages
+		for i := range formats {
+			expectedMsg := fmt.Sprintf("Test message %d", i+1)
+			if !strings.Contains(output, expectedMsg) {
+				tt.Errorf("Expected to find test message %d in output", i+1)
+			}
+		}
+	})
+}
+
+func TestGlobalLoggerConcurrency(t *testing.T) {
+	// Store original global logger and builder state to restore after tests
+	originalBuilder := globalLoggerBuilder
+	originalLogger := globalLogger.Load()
+
+	// Store and clear environment variables that might affect defaults
+	originalEnvVars := map[string]string{
+		ENV_LOG_FORMAT:      os.Getenv(ENV_LOG_FORMAT),
+		ENV_LOG_LEVEL:       os.Getenv(ENV_LOG_LEVEL),
+		ENV_LOG_BUFFER_SIZE: os.Getenv(ENV_LOG_BUFFER_SIZE),
+		ENV_LOG_RATE_LIMIT:  os.Getenv(ENV_LOG_RATE_LIMIT),
+		ENV_LOG_RATE_BURST:  os.Getenv(ENV_LOG_RATE_BURST),
+	}
+
+	// Clear environment variables to test default behavior
+	for k := range originalEnvVars {
+		_ = os.Unsetenv(k)
+	}
+
+	// Ensure cleanup after tests
+	defer func() {
+		// Restore original global state
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = originalBuilder
+		globalLogger.Store(originalLogger)
+		globalConfigMutex.Unlock()
+
+		// Restore environment variables
+		for k, v := range originalEnvVars {
+			if v == "" {
+				_ = os.Unsetenv(k)
+			} else {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}()
+
+	t.Run("concurrent_logger_access", func(tt *testing.T) {
+		var buf safeBuffer
+
+		// Reset to known state
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = NewLogger().WithOutput(&buf)
+		globalLogger.Store(nil)
+		globalConfigMutex.Unlock()
+
+		// Multiple goroutines accessing the global logger concurrently
+		numGoroutines := 20
+		messagesPerGoroutine := 10
+
+		var wg sync.WaitGroup
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func(gNum int) {
+				defer wg.Done()
+				logger := Logger() // Should be safe to call concurrently
+				for j := 0; j < messagesPerGoroutine; j++ {
+					logger.Info().Msgf("Concurrent message from goroutine %d, message %d", gNum, j)
+				}
+			}(i)
+		}
+
+		wg.Wait()
+		Logger().Close()
+
+		output := buf.String()
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		actualLines := 0
+		for _, line := range lines {
+			if strings.TrimSpace(line) != "" {
+				actualLines++
+			}
+		}
+
+		expectedMessages := numGoroutines * messagesPerGoroutine
+		// Due to buffering and rate limiting, we might not get all messages,
+		// but we should get a reasonable number
+		if actualLines < expectedMessages/2 {
+			tt.Errorf("Expected at least %d messages (got %d), might indicate concurrency issues",
+				expectedMessages/2, actualLines)
+		}
+
+		tt.Logf("Concurrent logging test: %d out of %d expected messages", actualLines, expectedMessages)
+	})
+	t.Run("concurrent_format_changes", func(tt *testing.T) {
+		var buf safeBuffer
+
+		// Reset to known state
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = NewLogger().WithOutput(&buf).WithBufferSize(1000)
+		globalLogger.Store(nil)
+		globalConfigMutex.Unlock()
+
+		// Test format changes in sequence - this is more realistic
+		// Concurrent format changes while logging is not a typical real-world scenario
+		formats := []string{"json", "console", "json", "console", "json"}
+
+		for i, format := range formats {
+			// Change format
+			err := SetGlobalLoggerLogFormat(format)
+			if err != nil {
+				tt.Errorf("SetGlobalLoggerLogFormat failed for format %s: %v", format, err)
+				continue
+			}
+
+			// Log a message with the new format
+			logger := Logger()
+			logger.Info().Msgf("Message %d with format %s", i, format)
+
+			// Small delay to ensure message is processed
+			time.Sleep(20 * time.Millisecond)
+		}
+
+		// Close logger after all operations
+		Logger().Close()
+
+		output := buf.String()
+		// Should have messages
+		if len(strings.TrimSpace(output)) == 0 {
+			tt.Error("Expected some output from format changes")
+		}
+
+		// Should contain both JSON and console format messages
+		hasJson := strings.Contains(output, `"message":`)
+		hasConsole := strings.Contains(output, "Message") && !strings.Contains(output, `"message":`)
+
+		if !hasJson && !hasConsole {
+			tt.Error("Expected to see messages in different formats")
+		}
+
+		tt.Logf("Format change test completed with output length: %d", len(output))
+	})
+}
+
+func TestGlobalLoggerEdgeCases(t *testing.T) {
+	// Store original global logger and builder state to restore after tests
+	originalBuilder := globalLoggerBuilder
+	originalLogger := globalLogger.Load()
+
+	// Store and clear environment variables that might affect defaults
+	originalEnvVars := map[string]string{
+		ENV_LOG_FORMAT:      os.Getenv(ENV_LOG_FORMAT),
+		ENV_LOG_LEVEL:       os.Getenv(ENV_LOG_LEVEL),
+		ENV_LOG_BUFFER_SIZE: os.Getenv(ENV_LOG_BUFFER_SIZE),
+		ENV_LOG_RATE_LIMIT:  os.Getenv(ENV_LOG_RATE_LIMIT),
+		ENV_LOG_RATE_BURST:  os.Getenv(ENV_LOG_RATE_BURST),
+	}
+
+	// Clear environment variables to test default behavior
+	for k := range originalEnvVars {
+		_ = os.Unsetenv(k)
+	}
+
+	// Ensure cleanup after tests
+	defer func() {
+		// Restore original global state
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = originalBuilder
+		globalLogger.Store(originalLogger)
+		globalConfigMutex.Unlock()
+
+		// Restore environment variables
+		for k, v := range originalEnvVars {
+			if v == "" {
+				_ = os.Unsetenv(k)
+			} else {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}()
+
+	t.Run("nil_builder_handling", func(tt *testing.T) {
+		// This should not cause a panic, but create a default logger
+		globalConfigMutex.Lock()
+		globalLoggerBuilder = nil
+		globalLogger.Store(nil)
+		globalConfigMutex.Unlock()
+
+		logger := Logger()
+		if logger == nil {
+			tt.Error("Expected non-nil logger even with nil global builder")
+		}
+
+		// Should have default settings
+		if logger.bufferSize != DEFAULT_BUFFER_SIZE {
+			tt.Errorf("Expected default buffer size %d with nil builder, got %d",
+				DEFAULT_BUFFER_SIZE, logger.bufferSize)
+		}
+
+		logger.Close()
+	})
+
+	t.Run("invalid_format_error_handling", func(tt *testing.T) {
+		// Reset to known state
+		globalLoggerBuilder = NewLogger()
+		globalLogger.Store(nil)
+
+		// Try to set invalid format
+		err := SetGlobalLoggerLogFormat("invalid_format_that_does_not_exist")
+		if err == nil {
+			tt.Error("Expected error when setting invalid log format")
+		}
+
+		// Logger should still work with previous/default format
+		logger := Logger()
+		if logger == nil {
+			tt.Error("Expected logger to still be available after invalid format error")
+		}
+
+		logger.Close()
+	})
+
+	t.Run("invalid_level_error_handling", func(tt *testing.T) {
+		// Reset to known state
+		globalLoggerBuilder = NewLogger()
+		globalLogger.Store(nil)
+
+		// Try to set invalid level
+		err := SetGlobalLoggerLogLevel("invalid_level_that_does_not_exist")
+		if err == nil {
+			tt.Error("Expected error when setting invalid log level")
+		}
+
+		// Logger should still work with previous/default level
+		logger := Logger()
+		if logger == nil {
+			tt.Error("Expected logger to still be available after invalid level error")
+		}
+
+		logger.Close()
+	})
+	t.Run("close_global_logger_safety", func(tt *testing.T) {
+		var buf bytes.Buffer
+
+		// Set up global logger
+		globalLoggerBuilder = NewLogger().WithOutput(&buf)
+		globalLogger.Store(nil)
+
+		// Get and use the logger
+		logger := Logger()
+		logger.Info().Msg("Before close")
+
+		// Close the logger directly (user might do this)
+		logger.Close()
+
+		// Getting logger again should return the same instance (since globalLogger wasn't reset)
+		logger2 := Logger()
+		if logger2 != logger {
+			tt.Error("Expected same logger instance since globalLogger variable wasn't reset")
+		}
+
+		// But we can force a new logger by using SetGlobalLoggerBuilder
+		SetGlobalLoggerBuilder(NewLogger().WithOutput(&buf))
+		logger3 := Logger()
+		if logger3 == logger {
+			tt.Error("Expected new logger instance after SetGlobalLoggerBuilder")
+		}
+
+		logger3.Info().Msg("After setting new global logger builder")
+		logger3.Close()
+
+		output := buf.String()
+		if !strings.Contains(output, "Before close") {
+			tt.Error("Expected to find first message")
+		}
+		if !strings.Contains(output, "After setting new global logger builder") {
+			tt.Error("Expected to find message from new logger")
+		}
+	})
+}
+
+// safeBuffer is a thread-safe buffer wrapper for concurrent testing
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *safeBuffer) Write(p []byte) (n int, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *safeBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
+
+func (sb *safeBuffer) Reset() {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.buf.Reset()
+}

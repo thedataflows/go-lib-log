@@ -4,6 +4,7 @@ import (
 	"bytes"
 	stdlog "log"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -103,13 +104,157 @@ func BenchmarkEventGrouping(b *testing.B) {
 	})
 
 	b.Run("without_grouping", func(bb *testing.B) {
-		logger := NewLogger().WithGroupWindow(0).Build() // No grouping
+		logger := NewLogger().WithGroupWindow(-1).Build() // No grouping
 		defer logger.Close()
 
 		bb.ResetTimer()
 		bb.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
 				logger.Info().Msg("Benchmark without grouping")
+			}
+		})
+	})
+}
+
+// BenchmarkGlobalLoggerAccess benchmarks the performance of accessing the global logger
+// This demonstrates the performance advantage of using atomic.Pointer vs mutex for read-heavy workloads
+func BenchmarkGlobalLoggerAccess(b *testing.B) {
+	b.Run("current_atomic_implementation", func(bb *testing.B) {
+		bb.ResetTimer()
+		bb.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				logger := Logger()
+				_ = logger // Prevent optimization
+			}
+		})
+	})
+
+	// Comparison with a theoretical mutex-based approach
+	b.Run("mutex_based_comparison", func(bb *testing.B) {
+		mutexLogger := &mutexBasedGlobalLogger{
+			logger: NewLogger().Build(),
+		}
+		defer mutexLogger.logger.Close()
+
+		bb.ResetTimer()
+		bb.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				logger := mutexLogger.Get()
+				_ = logger // Prevent optimization
+			}
+		})
+	})
+
+	// Direct atomic access without function call overhead
+	b.Run("direct_atomic_load", func(bb *testing.B) {
+		bb.ResetTimer()
+		bb.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				logger := globalLogger.Load()
+				_ = logger // Prevent optimization
+			}
+		})
+	})
+}
+
+// mutexBasedGlobalLogger simulates the old mutex-based approach for comparison
+type mutexBasedGlobalLogger struct {
+	mu     sync.RWMutex
+	logger *CustomLogger
+}
+
+func (m *mutexBasedGlobalLogger) Get() *CustomLogger {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.logger
+}
+
+// BenchmarkGlobalLoggerWithRealLogging benchmarks the complete logging pipeline
+// using the global logger to show real-world performance
+func BenchmarkGlobalLoggerWithRealLogging(b *testing.B) {
+	// Setup a buffer to capture output for consistent benchmarking
+	var buf bytes.Buffer
+
+	// Create a custom logger with buffer output for benchmarking
+	originalLogger := globalLogger.Load()
+	testLogger := NewLogger().WithOutput(&buf).Build()
+	globalLogger.Store(testLogger)
+
+	// Restore original logger after benchmark
+	defer func() {
+		testLogger.Close()
+		globalLogger.Store(originalLogger)
+	}()
+
+	b.Run("global_logger_info_messages", func(bb *testing.B) {
+		bb.ResetTimer()
+		bb.RunParallel(func(pb *testing.PB) {
+			counter := 0
+			for pb.Next() {
+				Logger().Info().
+					Str("component", "benchmark").
+					Int("counter", counter).
+					Msg("Performance test message")
+				counter++
+			}
+		})
+	})
+
+	b.Run("global_logger_with_fields", func(bb *testing.B) {
+		bb.ResetTimer()
+		bb.RunParallel(func(pb *testing.PB) {
+			msgCounter := 0
+			for pb.Next() {
+				Logger().Info().
+					Str("component", "benchmark").
+					Str("operation", "field_logging").
+					Int("counter", msgCounter).
+					Time("timestamp", time.Now()).
+					Bool("is_benchmark", true).
+					Msg("Complex benchmark message")
+				msgCounter++
+			}
+		})
+	})
+}
+
+// BenchmarkGlobalLoggerConcurrentAccess benchmarks concurrent access patterns
+// that are common in real applications
+func BenchmarkGlobalLoggerConcurrentAccess(b *testing.B) {
+	// Test concurrent read access (most common pattern)
+	b.Run("concurrent_reads", func(bb *testing.B) {
+		bb.ResetTimer()
+		bb.SetParallelism(10) // Simulate 10 concurrent goroutines
+		bb.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				logger := Logger()
+				// Simulate some work with the logger
+				_ = logger.Info()
+			}
+		})
+	})
+
+	// Test mixed read/write access (less common but important)
+	b.Run("mixed_read_write", func(bb *testing.B) {
+		bb.ResetTimer()
+		bb.SetParallelism(10)
+		bb.RunParallel(func(pb *testing.PB) {
+			readCount := 0
+			for pb.Next() {
+				readCount++
+				if readCount%1000 == 0 {
+					// Occasional write operation (1 in 1000)
+					originalLogger := Logger()
+					newLogger := NewLogger().Build()
+					globalLogger.Store(newLogger)
+					// Restore original (in real usage, you wouldn't do this)
+					globalLogger.Store(originalLogger)
+					newLogger.Close()
+				} else {
+					// Normal read operation
+					logger := Logger()
+					_ = logger
+				}
 			}
 		})
 	})
