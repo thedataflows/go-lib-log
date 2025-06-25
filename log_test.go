@@ -48,7 +48,7 @@ func setupTestLogger(t *testing.T, bufferSize, rateLimit, rateBurst int, output 
 
 	if output != nil {
 		// Create a custom logger that uses our rate-limited writer with the test output
-		bufferedWriter := NewBufferedRateLimitedWriter(output, bufferSize, rateLimit, rateBurst)
+		bufferedWriter := newBufferedRateLimitedWriter(output, bufferSize, rateLimit, rateBurst, 0, false)
 		zl := zerolog.New(bufferedWriter).
 			With().
 			Timestamp().
@@ -61,8 +61,8 @@ func setupTestLogger(t *testing.T, bufferSize, rateLimit, rateBurst int, output 
 		}
 		return logger
 	} else {
-		// Use normal NewLogger() when no output override is needed
-		return NewLogger()
+		// Use normal NewLogger().Build() when no output override is needed
+		return NewLogger().Build()
 	}
 }
 
@@ -76,7 +76,7 @@ func TestNewLoggerWithEnvironmentVariables(t *testing.T) {
 		_ = os.Unsetenv(ENV_LOG_RATE_LIMIT)
 		_ = os.Unsetenv(ENV_LOG_RATE_BURST)
 
-		logger := NewLogger()
+		logger := NewLogger().Build()
 		defer logger.Close()
 
 		// Check defaults - we can only check buffer size directly now
@@ -94,7 +94,7 @@ func TestNewLoggerWithEnvironmentVariables(t *testing.T) {
 		_ = os.Setenv(ENV_LOG_RATE_LIMIT, "50")
 		_ = os.Setenv(ENV_LOG_RATE_BURST, "25")
 
-		logger := NewLogger()
+		logger := NewLogger().Build()
 		defer logger.Close()
 
 		// Check custom values - we can only check buffer size directly now
@@ -110,7 +110,7 @@ func TestNewLoggerWithEnvironmentVariables(t *testing.T) {
 		_ = os.Setenv(ENV_LOG_RATE_LIMIT, "-10")
 		_ = os.Setenv(ENV_LOG_RATE_BURST, "not_a_number")
 
-		logger := NewLogger()
+		logger := NewLogger().Build()
 		defer logger.Close()
 
 		// Should fall back to defaults
@@ -303,8 +303,7 @@ func TestLogLevels(t *testing.T) {
 	_ = os.Setenv(ENV_LOG_RATE_LIMIT, "100")
 	_ = os.Setenv(ENV_LOG_RATE_BURST, "50")
 
-	logger := NewLogger()
-	logger.Logger = logger.Logger.Output(&buf)
+	logger := NewLogger().WithOutput(&buf).Build()
 	defer logger.Close()
 
 	// Send messages at different levels
@@ -502,7 +501,7 @@ func TestEventGrouping(t *testing.T) {
 		logger := setupTestLogger(tt, 10, 100, 10, &buf)
 
 		// Create a new logger with grouping disabled
-		groupedLogger := NewLoggerWithGrouping(0)
+		groupedLogger := NewLogger().WithoutGrouping().Build()
 		defer groupedLogger.Close()
 
 		// All messages should be written normally
@@ -536,7 +535,7 @@ func TestEventGrouping(t *testing.T) {
 		_ = os.Setenv(ENV_LOG_LEVEL, "info")
 
 		// Use the main constructor with grouping
-		logger := NewLoggerWithGrouping(500 * time.Millisecond)
+		logger := NewLogger().WithGroupWindow(500 * time.Millisecond).Build()
 		defer logger.Close()
 
 		// Send the same message multiple times quickly
@@ -551,7 +550,7 @@ func TestEventGrouping(t *testing.T) {
 
 	t.Run("different_messages_not_grouped", func(tt *testing.T) {
 		// Test that different messages are not grouped together using main constructor
-		logger := NewLoggerWithGrouping(500 * time.Millisecond)
+		logger := NewLogger().WithGroupWindow(500 * time.Millisecond).Build()
 		defer logger.Close()
 
 		// Send different messages
@@ -576,7 +575,7 @@ func TestEventGrouping(t *testing.T) {
 
 		_ = os.Setenv(ENV_LOG_LEVEL, "debug")
 
-		logger := NewLoggerWithGrouping(500 * time.Millisecond)
+		logger := NewLogger().WithGroupWindow(500 * time.Millisecond).Build()
 		defer logger.Close()
 
 		// Send same message at different levels
@@ -604,7 +603,7 @@ func TestEventGrouping(t *testing.T) {
 		_ = os.Setenv(ENV_LOG_GROUP_WINDOW, "1") // 1 second window
 
 		// Use main constructor that reads from environment
-		logger := NewLogger()
+		logger := NewLogger().Build()
 		defer logger.Close()
 
 		// The grouper should be initialized with 1 second window from env var
@@ -620,7 +619,7 @@ func TestEventGrouperPerformance(t *testing.T) {
 		// Test that grouping doesn't significantly impact performance
 		groupWindow := 100 * time.Millisecond
 
-		logger := NewLoggerWithGrouping(groupWindow)
+		logger := NewLogger().WithGroupWindow(groupWindow).Build()
 		defer logger.Close()
 
 		start := time.Now()
@@ -736,21 +735,21 @@ func TestUnbufferedLogging(tMain *testing.T) {
 			setupFunc: func() *CustomLogger {
 				os.Setenv(ENV_LOG_DISABLE_BUFFERING, "true")
 				defer os.Unsetenv(ENV_LOG_DISABLE_BUFFERING)
-				return NewLogger()
+				return NewLogger().Build()
 			},
 			description: "Disable buffering via environment variable",
 		},
 		{
 			name: "explicit_unbuffered",
 			setupFunc: func() *CustomLogger {
-				return NewLoggerWithoutBuffering()
+				return NewLogger().WithoutBuffering().Build()
 			},
 			description: "Explicitly create unbuffered logger",
 		},
 		{
 			name: "unbuffered_without_grouping",
 			setupFunc: func() *CustomLogger {
-				return NewLoggerWithoutBufferingAndGrouping()
+				return NewLogger().WithoutBuffering().WithoutGrouping().Build()
 			},
 			description: "Unbuffered logger without grouping",
 		},
@@ -769,22 +768,22 @@ func TestUnbufferedLogging(tMain *testing.T) {
 			switch tt.name {
 			case "environment_variable_disable":
 				os.Setenv(ENV_LOG_DISABLE_BUFFERING, "true")
-				bufferedWriter := NewBufferedRateLimitedWriterWithOptions(&buf, bufferSize, rateLimit, rateBurst, 0, true)
+				bufferedWriter := newBufferedRateLimitedWriter(&buf, bufferSize, rateLimit, rateBurst, 0, true)
 				logger = &CustomLogger{
-					Logger: NewJsonLogger().Logger.Output(bufferedWriter).Level(logLevel),
+					Logger: NewLogger().AsJSON().Build().Logger.Output(bufferedWriter).Level(logLevel),
 					writer: bufferedWriter,
 				}
 				os.Unsetenv(ENV_LOG_DISABLE_BUFFERING)
 			case "explicit_unbuffered":
-				bufferedWriter := NewBufferedRateLimitedWriterWithOptions(&buf, bufferSize, rateLimit, rateBurst, 0, true)
+				bufferedWriter := newBufferedRateLimitedWriter(&buf, bufferSize, rateLimit, rateBurst, 0, true)
 				logger = &CustomLogger{
-					Logger: NewJsonLogger().Logger.Output(bufferedWriter).Level(logLevel),
+					Logger: NewLogger().AsJSON().Build().Logger.Output(bufferedWriter).Level(logLevel),
 					writer: bufferedWriter,
 				}
 			case "unbuffered_without_grouping":
-				bufferedWriter := NewBufferedRateLimitedWriterWithOptions(&buf, bufferSize, rateLimit, rateBurst, -1, true)
+				bufferedWriter := newBufferedRateLimitedWriter(&buf, bufferSize, rateLimit, rateBurst, -1, true)
 				logger = &CustomLogger{
-					Logger: NewJsonLogger().Logger.Output(bufferedWriter).Level(logLevel),
+					Logger: NewLogger().AsJSON().Build().Logger.Output(bufferedWriter).Level(logLevel),
 					writer: bufferedWriter,
 				}
 			}
@@ -822,17 +821,17 @@ func TestUnbufferedVsBuffered(t *testing.T) {
 	// Test unbuffered mode
 	var unbufferedBuf bytes.Buffer
 	bufferSize, rateLimit, rateBurst := getBufferConfig()
-	unbufferedWriter := NewBufferedRateLimitedWriterWithOptions(&unbufferedBuf, bufferSize, rateLimit, rateBurst, 0, true)
+	unbufferedWriter := newBufferedRateLimitedWriter(&unbufferedBuf, bufferSize, rateLimit, rateBurst, 0, true)
 	unbufferedLogger := &CustomLogger{
-		Logger: NewJsonLogger().Logger.Output(unbufferedWriter).Level(InfoLevel),
+		Logger: NewLogger().AsJSON().Build().Logger.Output(unbufferedWriter).Level(InfoLevel),
 		writer: unbufferedWriter,
 	}
 
 	// Test buffered mode
 	var bufferedBuf bytes.Buffer
-	bufferedWriter := NewBufferedRateLimitedWriterWithOptions(&bufferedBuf, 10, 1, 1, 0, false) // Small buffer, low rate
+	bufferedWriter := newBufferedRateLimitedWriter(&bufferedBuf, 10, 1, 1, 0, false) // Small buffer, low rate
 	bufferedLogger := &CustomLogger{
-		Logger: NewJsonLogger().Logger.Output(bufferedWriter).Level(InfoLevel),
+		Logger: NewLogger().AsJSON().Build().Logger.Output(bufferedWriter).Level(InfoLevel),
 		writer: bufferedWriter,
 	}
 
@@ -866,9 +865,9 @@ func TestUnbufferedWithRateLimiting(t *testing.T) {
 	var buf bytes.Buffer
 
 	// Create unbuffered writer with very low rate limit
-	unbufferedWriter := NewBufferedRateLimitedWriterWithOptions(&buf, 100, 2, 1, 0, true) // 2 msgs/sec, burst 1
+	unbufferedWriter := newBufferedRateLimitedWriter(&buf, 100, 2, 1, 0, true) // 2 msgs/sec, burst 1
 	logger := &CustomLogger{
-		Logger: NewJsonLogger().Logger.Output(unbufferedWriter).Level(InfoLevel),
+		Logger: NewLogger().AsJSON().Build().Logger.Output(unbufferedWriter).Level(InfoLevel),
 		writer: unbufferedWriter,
 	}
 

@@ -6,28 +6,37 @@ This library aims to provide a consistent logging interface with advanced featur
 
 ## Overview
 
-`go-lib-log` offers a wrapper around `zerolog` to simplify common logging tasks and provide robust production-ready features. It supports:
-
-* Multiple log levels (Trace, Debug, Info, Warn, Error, Fatal, Panic).
-* Structured logging in JSON or human-readable console format.
-* High-performance logging with buffering and rate limiting to prevent log flooding.
-* Event Grouping: Automatically groups similar log messages within configurable time windows to reduce noise and improve log readability.
-* Automatic reporting of dropped log messages due to backpressure.
-* Configuration via environment variables for easy setup in different environments.
-* Compatibility layer for `go-logging.v1`.
+`go-lib-log` is a high-performance logging library for Go that wraps `zerolog` with additional production-ready features. It provides a clean builder pattern API for creating customized loggers with advanced capabilities like event grouping, buffering, and rate limiting.
 
 ## Features
 
-* **Structured Logging**: Output logs in JSON for easy parsing by log management systems, or in a human-friendly console format for development.
-* **Configurable Log Levels**: Set log levels dynamically via environment variables or code.
-* **Buffering**: Asynchronously writes logs through a configurable buffer to improve application performance.
-* **Rate Limiting**: Controls the rate of log messages written to the output, preventing overload.
-* **Event Grouping (Default)**: Groups identical log messages within configurable time windows, showing a single instance with a count. This significantly reduces log noise from repeated errors or warnings. Enabled by default with a 1-second window.
-* **Dropped Message Reporting**: If the log buffer is full and messages are dropped, the logger will periodically report the count of dropped messages.
-* **Environment Variable Configuration**: Easily configure log level, format, buffer size, rate limits, group windows, and drop report intervals using environment variables.
-* **Package-Specific Logging**: Include package name automatically in log entries for better context.
-* **Pretty Printing**: Utility functions to pretty-print data structures (e.g., YAML) in logs.
-* **`go-logging.v1` Compatibility**: Includes a backend to bridge with applications using `gopkg.in/op/go-logging.v1`.
+### Core Logging Features
+
+* **Multiple Log Levels**: Supports Trace, Debug, Info, Warn, Error, Fatal, and Panic levels
+* **Structured Logging**: Output in JSON or human-readable console format
+* **Builder Pattern API**: Modern, chainable configuration using `NewLogger()`
+* **Environment Variable Configuration**: Easy setup in different environments without code changes
+* **Compatibility Layer**: Maintains compatibility with `go-logging.v1`
+
+### Performance Features
+
+* **High-Performance Buffering**: Asynchronous processing with configurable buffer sizes
+* **Rate Limiting**: Prevents log flooding with configurable limits and burst handling
+* **Zero-Allocation JSON**: Leverages `zerolog`'s efficient JSON marshaling
+* **Reduced Lock Contention**: Optimized internal locking for concurrent applications
+
+### Advanced Features
+
+* **Event Grouping**: Automatically groups identical log messages within configurable time windows to reduce noise and improve readability
+* **Backpressure Handling**: Automatic reporting of dropped log messages due to buffer overflow
+* **Flexible Buffering Control**: Choose between buffered (high performance) or unbuffered (immediate write) modes
+* **Custom Output Destinations**: Support for custom writers and output formats
+
+### Configuration Features
+
+* **Programmatic Configuration**: Full control via builder pattern methods
+* **Environment Variable Support**: Configure all features via environment variables
+* **Runtime Flexibility**: Mix and match features as needed (grouping, buffering, rate limiting)
 
 ## Performance
 
@@ -39,7 +48,7 @@ Here\'s a comparative overview of approximate performance for a simple logging o
 
 | Feature / Logger                                       | `go-lib-log` (Buffered) | Standard Library `log` | `zerolog` (Direct) |
 | :----------------------------------------------------- | :---------------------- | :--------------------- | :----------------- |
-| **Approx. ns/op**                                      | ~50-55 ns/op            | ~300-500+ ns/op        | ~30-40 ns/op       |
+| **Approx. ns/op**                                      | ~33 ns/op               | ~350+ ns/op            | ~30 ns/op          |
 | **Event Grouping Overhead**                            | ~2-7% (when enabled)    | N/A                    | N/A                |
 | **Asynchronous Processing**                            | Yes (Buffered)          | No (Synchronous)       | No (Synchronous)   |
 | **Structured Logging (JSON)**                          | Yes (via zerolog)       | Manual / Verbose       | Yes (Core)         |
@@ -86,34 +95,34 @@ import (
 )
 
 func main() {
- // The global logger is initialized automatically with event grouping enabled.
- // Ensure to close it on application shutdown to flush buffers.
- defer log.Close()
+ // Create a logger using the builder pattern
+ logger := log.NewLogger().Build()
+ // Ensure to close it on application shutdown to flush buffers
+ defer logger.Close()
 
- log.Info("main", "Application started")
- log.Debug("main", "This is a debug message.")
- log.Warnf("main", "Something to be aware of: %s", "potential issue")
+ logger.Info().Msg("Application started")
+ logger.Debug().Msg("This is a debug message.")
+ logger.Warn().Str("issue", "potential issue").Msg("Something to be aware of")
  err := errors.New("something went wrong")
- log.Error("main", err, "An error occurred")
+ logger.Error().Err(err).Msg("An error occurred")
 
- // Example of logging with package context
- myFunction()
+ // Example of creating logger with custom configuration
+ customLogger := log.NewLogger().
+  WithBufferSize(1000).
+  WithRateLimit(500).
+  AsJSON().
+  Build()
+ defer customLogger.Close()
 
  // Demonstrate event grouping with repeated messages
- for i := 0; i < 5; i++ {
-  log.Error("main", errors.New("connection failed"), "Database connection error")
+ for range 5 {
+  logger.Error().Err(errors.New("connection failed")).Msg("Database connection error")
   // These identical messages will be grouped automatically
  }
 
  // To see Fatal or Panic in action (uncomment to test):
- // log.Fatal("main", err, "A fatal error occurred, exiting.")
- // log.Panic("main", err, "A panic occurred.")
-}
-
-func myFunction() {
- log.Info("myFunction", "Executing myFunction")
- data := map[string]interface{}{"key": "value", "number": 123}
- log.Debugf("myFunction", "Processing data: %s", log.PrettyYamlString(data))
+ // logger.Fatal().Err(err).Msg("A fatal error occurred, exiting.")
+ // logger.Panic().Err(err).Msg("A panic occurred.")
 }
 
 ```
@@ -174,7 +183,7 @@ When messages are grouped, the final log entry includes additional fields:
 
 ```go
 // Default logger with event grouping enabled (1 second window)
-logger := log.NewLogger()
+logger := log.NewLogger().Build()
 defer logger.Close()
 
 // These messages will be grouped if sent within 1 second
@@ -183,11 +192,11 @@ logger.Error().Msg("Database connection failed") // Will be grouped
 logger.Error().Msg("Database connection failed") // Will be grouped
 
 // Create logger with custom grouping window
-logger := log.NewLoggerWithGrouping(2 * time.Second)
+logger := log.NewLogger().WithGroupWindow(2 * time.Second).Build()
 defer logger.Close()
 
 // Create logger with grouping explicitly disabled
-logger := log.NewLoggerWithoutGrouping()
+logger := log.NewLogger().WithoutGrouping().Build()
 defer logger.Close()
 
 // Different messages won't be grouped
@@ -195,11 +204,11 @@ logger.Error().Msg("Redis connection failed") // Separate message
 
 // Environment variable configuration
 os.Setenv("LOG_GROUP_WINDOW", "2") // 2 second window
-logger := log.NewLogger() // Will use environment configuration
+logger := log.NewLogger().Build() // Will use environment configuration
 
 // Disable grouping via environment variable
 os.Setenv("LOG_GROUP_WINDOW", "0") // Disables grouping
-logger := log.NewLogger()
+logger := log.NewLogger().Build()
 ```
 
 ## Buffering Control
@@ -216,7 +225,7 @@ In buffered mode, log messages are queued in an internal buffer and processed as
 
 ```go
 // Default buffered logger
-logger := log.NewLogger()
+logger := log.NewLogger().Build()
 defer logger.Close() // Important: ensures all buffered messages are flushed
 
 logger.Info().Msg("This message goes to the buffer first")
@@ -242,7 +251,7 @@ export LOG_DISABLE_BUFFERING=yes
 
 ```go
 // Will use unbuffered mode due to environment variable
-logger := log.NewLogger()
+logger := log.NewLogger().Build()
 logger.Info().Msg("This message is written immediately")
 ```
 
@@ -250,11 +259,11 @@ logger.Info().Msg("This message is written immediately")
 
 ```go
 // Explicitly create unbuffered logger
-logger := log.NewLoggerWithoutBuffering()
+logger := log.NewLogger().WithoutBuffering().Build()
 logger.Info().Msg("This message is written immediately")
 
 // Unbuffered with event grouping disabled
-logger := log.NewLoggerWithoutBufferingAndGrouping()
+logger := log.NewLogger().WithoutBuffering().WithoutGrouping().Build()
 logger.Info().Msg("Immediate write, no grouping")
 ```
 
@@ -289,46 +298,58 @@ import (
 )
 
 func main() {
- defer log.Close()
+ // Create logger with programmatic configuration
+ logger := log.NewLogger().
+  WithLogLevelString("debug").
+  AsJSON().
+  WithBufferSize(10000).
+  WithRateLimit(1000).
+  Build()
+ defer logger.Close()
 
- // Set log level
- err := log.SetLoggerLogLevel("debug")
- if err != nil {
-  log.Error("main", err, "Failed to set log level")
- }
+ logger.Info().Msg("Logger configured programmatically.")
 
- // Set log format (this re-initializes parts of the logger)
- err = log.SetLoggerLogFormat("json")
- if err != nil {
-  log.Error("main", err, "Failed to set log format")
- }
+ // For more advanced custom logger setup with custom output:
+ customOutput := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
+ customLogger := log.NewLogger().
+  WithOutput(customOutput).
+  WithLogLevel(zerolog.InfoLevel).
+  Build()
+ defer customLogger.Close()
 
- log.Info("main", "Logger configured programmatically.")
-
- // For more advanced custom logger setup:
- // customOutput := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
- // logger := log.NewCustomLogger(customOutput) // This creates a new instance, not modifying the global one directly
- // logger.Info().Msg("This is from a custom logger instance")
- // defer logger.Close() // Important if you create separate instances
+ customLogger.Info().Msg("This is from a custom logger instance")
 }
 ```
 
-### Logger Constructors
+### Logger Configuration with Builder Pattern
 
-The library provides several constructor functions to suit different needs:
+The library uses a builder pattern for creating loggers with flexible configuration:
 
 ```go
 // Default logger with event grouping enabled (1 second window)
-logger := log.NewLogger()
+logger := log.NewLogger().Build()
 
 // Logger with custom event grouping window
-logger := log.NewLoggerWithGrouping(5 * time.Second)
+logger := log.NewLogger().WithGroupWindow(5 * time.Second).Build()
 
 // Logger with event grouping explicitly disabled
-logger := log.NewLoggerWithoutGrouping()
+logger := log.NewLogger().WithoutGrouping().Build()
 
 // JSON-only logger (always outputs JSON format)
-logger := log.NewJsonLogger()
+logger := log.NewLogger().AsJSON().Build()
+
+// High-performance buffered logger with custom configuration
+logger := log.NewLogger().
+    WithBufferSize(50000).
+    WithRateLimit(10000).
+    WithGroupWindow(2 * time.Second).
+    Build()
+
+// Unbuffered logger for critical logging
+logger := log.NewLogger().
+    WithoutBuffering().
+    WithoutGrouping().
+    Build()
 ```
 
 ## Important: Close() Method
@@ -336,7 +357,7 @@ logger := log.NewJsonLogger()
 **Always call `Close()` on your logger instances** to ensure proper cleanup and message flushing:
 
 ```go
-logger := log.NewLogger()
+logger := log.NewLogger().Build()
 defer logger.Close() // Critical for proper cleanup
 ```
 
@@ -358,11 +379,11 @@ The `Close()` method performs several important operations:
 
 ```go
 func main() {
-    logger := log.NewLogger()
+    logger := log.NewLogger().Build()
     defer logger.Close() // Ensures all messages are flushed
 
     // Send many identical messages - these will be grouped
-    for i := 0; i < 100; i++ {
+    for range 100 {
         logger.Error().Msg("Database connection failed")
     }
 
@@ -390,21 +411,21 @@ func main() {
 import log "github.com/thedataflows/go-lib-log"
 
 func main() {
-    logger := log.NewLogger()
+    logger := log.NewLogger().Build()
     defer logger.Close()
     logger.Info().Msg("Using instance logger")
 }
 ```
 
-## Migration Note
+## Migration from Previous Versions
 
-**For existing users**: If you prefer the previous behavior without event grouping, you can:
+**For existing users**: The library now uses a modern builder pattern API. If you prefer the previous behavior without event grouping, you can:
 
-1. Use `log.NewLoggerWithoutGrouping()` instead of `log.NewLogger()`
+1. Use `log.NewLogger().WithoutGrouping().Build()` instead of `log.NewLogger().Build()`
 2. Set the environment variable `LOG_GROUP_WINDOW=0` to disable grouping
-3. Use `log.NewLoggerWithGrouping(0)` to explicitly disable grouping
+3. Use `log.NewLogger().WithGroupWindow(0).Build()` to explicitly disable grouping
 
-This change is backward compatible - your existing code will continue to work, but will now benefit from automatic event grouping.
+The new API provides more flexibility and cleaner configuration options.
 
 ## License
 

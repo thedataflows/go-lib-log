@@ -77,9 +77,9 @@ func SetLoggerLogFormat(logFormat string) error {
 
 	switch format {
 	case LOG_FORMAT_CONSOLE:
-		Logger.SetLogger(NewLogger().Logger)
+		Logger.SetLogger(NewLogger().Build().Logger)
 	case LOG_FORMAT_JSON:
-		Logger.SetLogger(NewJsonLogger().Logger)
+		Logger.SetLogger(NewLogger().AsJSON().Build().Logger)
 	}
 	return nil
 }

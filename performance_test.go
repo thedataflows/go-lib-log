@@ -26,8 +26,8 @@ func BenchmarkZeroCopyLogger(b *testing.B) {
 	_ = os.Setenv(ENV_LOG_RATE_LIMIT, "100000") // High rate limit for benchmarking
 	_ = os.Setenv(ENV_LOG_RATE_BURST, "10000")  // High burst for benchmarking
 
-	// Create custom logger with buffer output
-	logger := newCustomLogger(&buf)
+	// Create custom logger with buffer output using builder pattern
+	logger := NewLogger().WithOutput(&buf).Build()
 	defer logger.Close()
 
 	// Restore environment variables
@@ -91,7 +91,7 @@ func BenchmarkEventGrouping(b *testing.B) {
 
 	b.Run("with_grouping", func(bb *testing.B) {
 		groupWindow := 100 * time.Millisecond
-		logger := NewLoggerWithGrouping(groupWindow)
+		logger := NewLogger().WithGroupWindow(groupWindow).Build()
 		defer logger.Close()
 
 		bb.ResetTimer()
@@ -103,7 +103,7 @@ func BenchmarkEventGrouping(b *testing.B) {
 	})
 
 	b.Run("without_grouping", func(bb *testing.B) {
-		logger := NewLoggerWithGrouping(0) // No grouping
+		logger := NewLogger().WithGroupWindow(0).Build() // No grouping
 		defer logger.Close()
 
 		bb.ResetTimer()

@@ -29,8 +29,13 @@ func main() {
 	_ = os.Setenv("LOG_LEVEL", "info") // Set to info to see standard messages
 	_ = os.Setenv("LOG_FORMAT", "console")
 
-	// Initialize the global logger with event grouping enabled
-	logger := log.NewLoggerWithGrouping(time.Duration(groupWindowDemo) * time.Second)
+	// Initialize the global logger with event grouping enabled using builder pattern
+	logger := log.NewLogger().
+		WithBufferSize(bufferSizeDemo).
+		WithRateLimit(rateLimitDemo).
+		WithRateBurst(rateBurstDemo).
+		WithGroupWindow(time.Duration(groupWindowDemo) * time.Second).
+		Build()
 	// Crucial: Ensure Close is called to flush buffers and stop background goroutines.
 	defer logger.Close()
 
