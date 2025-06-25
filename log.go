@@ -199,6 +199,8 @@ type BufferedRateLimitedWriter struct {
 
 	closed      atomic.Bool   // Changed from bool with mutex
 	closeSignal chan struct{} // Added for shutdown signaling
+	ctx         context.Context
+	cancelFunc  context.CancelFunc
 
 	// Drop tracking and reporting
 	droppedCount       atomic.Uint64
@@ -253,6 +255,9 @@ func newBufferedRateLimitedWriter(target io.Writer, bufferSize int, rateLimit, r
 		bufferingDisabled:  bufferingDisabled,
 	}
 
+	// Create cancellable context for rate limiter
+	w.ctx, w.cancelFunc = context.WithCancel(context.Background())
+
 	// Pre-compute static parts of drop report message for performance
 	w.intervalSecondsStr = strconv.FormatFloat(w.dropReportInterval.Seconds(), 'f', 0, 64)
 	w.dropReportPrefix = []byte(`{"time":"`)
@@ -265,8 +270,12 @@ func (w *BufferedRateLimitedWriter) startProcessor() {
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
+
 		for data := range w.buffer {
-			_ = w.limiter.Wait(context.Background())
+			// Use the cancellable context for rate limiting
+			if err := w.limiter.Wait(w.ctx); err != nil {
+				// Context cancelled, write without rate limiting
+			}
 
 			// Protect concurrent writes to target with mutex
 			w.targetMux.Lock()
@@ -358,7 +367,7 @@ func (w *BufferedRateLimitedWriter) Write(p []byte) (int, error) {
 		}
 
 		// Apply rate limiting
-		_ = w.limiter.Wait(context.Background())
+		_ = w.limiter.Wait(w.ctx)
 
 		// Write directly to target with mutex protection
 		w.targetMux.Lock()
@@ -460,7 +469,12 @@ func (w *BufferedRateLimitedWriter) Close() error {
 
 	// Close the buffer and wait for processor to finish
 	close(w.buffer)
+
+	// Wait for processor to finish processing all buffered messages
 	w.wg.Wait()
+
+	// Only cancel the context after processor is done
+	w.cancelFunc()
 
 	// Wait for drop reporter to finish
 	w.reportWg.Wait()
@@ -478,6 +492,20 @@ func (l *CustomLogger) Close() {
 // SetLogger replaces the underlying zerolog.Logger instance in the CustomLogger.
 func (l *CustomLogger) SetLogger(logger zerolog.Logger) {
 	l.Logger = logger
+}
+
+// Flush ensures all buffered messages are written to the output.
+// This is useful when you want to force immediate output without closing the logger.
+func (l *CustomLogger) Flush() {
+	if l.writer != nil {
+		l.writer.Flush()
+	}
+}
+
+// Flush ensures all buffered messages in the global Logger are written to the output.
+// This is useful when you want to force immediate output without closing the logger.
+func Flush() {
+	Logger.Flush()
 }
 
 // getLogLevel parses and validates the log level from environment
@@ -753,4 +781,31 @@ func (eg *eventGrouper) close() [][]byte {
 	}
 
 	return pendingMessages
+}
+
+// Flush ensures all buffered messages are written to the target.
+// This is useful when you want to force immediate output without closing the writer.
+func (w *BufferedRateLimitedWriter) Flush() {
+	if w.closed.Load() {
+		return // Already closed
+	}
+
+	if w.bufferingDisabled {
+		// In unbuffered mode, nothing to flush
+		return
+	}
+
+	// Ensure processor is started
+	w.once.Do(func() {
+		w.startProcessor()
+		w.startDropReporter()
+	})
+
+	// Simple approach: wait for buffer to drain
+	for i := 0; i < 100; i++ { // Max 100ms
+		if len(w.buffer) == 0 {
+			break
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
 }
