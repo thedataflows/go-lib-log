@@ -493,15 +493,6 @@ func getLogLevel() zerolog.Level {
 	return logLevel
 }
 
-// getBufferConfig parses buffer and rate limiting configuration from environment variables.
-// It returns the buffer size, rate limit, and rate burst, using default values if
-// environment variables are not set or invalid.
-func getBufferConfig() (bufferSize, rateLimit, rateBurst int) {
-	return getEnvInt(ENV_LOG_BUFFER_SIZE, DEFAULT_BUFFER_SIZE),
-		getEnvInt(ENV_LOG_RATE_LIMIT, DEFAULT_RATE_LIMIT),
-		getEnvInt(ENV_LOG_RATE_BURST, DEFAULT_RATE_BURST)
-}
-
 // getFormatBasedOutput determines output writer based on log format
 func getFormatBasedOutput() io.Writer {
 	logFormat, _ := ParseLogFormat(os.Getenv(ENV_LOG_FORMAT))
