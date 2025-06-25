@@ -75,11 +75,22 @@ func SetLoggerLogFormat(logFormat string) error {
 		return err
 	}
 
+	// Close the current logger's writer to clean up resources
+	Logger.Close()
+
+	// Create a new logger with the desired format and replace the global Logger's components
+	var newLogger *CustomLogger
 	switch format {
-	case LOG_FORMAT_CONSOLE:
-		Logger.SetLogger(NewLogger().Build().Logger)
 	case LOG_FORMAT_JSON:
-		Logger.SetLogger(NewLogger().AsJSON().Build().Logger)
+		newLogger = NewLogger().AsJSON().Build()
+	default:
+		newLogger = NewLogger().Build()
 	}
+
+	// Replace the Logger's components with the new logger's components
+	Logger.Logger = newLogger.Logger
+	Logger.writer = newLogger.writer
+	Logger.bufferSize = newLogger.bufferSize
+
 	return nil
 }
