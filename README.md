@@ -148,8 +148,8 @@ The logger can be configured using the following environment variables:
   * Default: `false` (buffering enabled).
   * When disabled, messages are written immediately with rate limiting only.
 * `LOG_GROUP_WINDOW`: Sets the time window (in seconds) for grouping similar log events.
-  * Default: `1` (1 second, > 0 enables event grouping).
-  * Set to `0` to disable event grouping.
+  * Default: `1` (1 second, >= 0 enables event grouping with 0 using default value).
+  * Set to `-1` to disable event grouping.
 * `ENV_LOG_DROP_REPORT_INTERVAL`: Sets the interval (in seconds) for reporting dropped log messages.
   * Default: `10`.
 
@@ -207,7 +207,7 @@ os.Setenv("LOG_GROUP_WINDOW", "2") // 2 second window
 logger := log.NewLogger().Build() // Will use environment configuration
 
 // Disable grouping via environment variable
-os.Setenv("LOG_GROUP_WINDOW", "0") // Disables grouping
+os.Setenv("LOG_GROUP_WINDOW", "-1") // Disables grouping
 logger := log.NewLogger().Build()
 ```
 
@@ -422,8 +422,8 @@ func main() {
 **For existing users**: The library now uses a modern builder pattern API. If you prefer the previous behavior without event grouping, you can:
 
 1. Use `log.NewLogger().WithoutGrouping().Build()` instead of `log.NewLogger().Build()`
-2. Set the environment variable `LOG_GROUP_WINDOW=0` to disable grouping
-3. Use `log.NewLogger().WithGroupWindow(0).Build()` to explicitly disable grouping
+2. Set the environment variable `LOG_GROUP_WINDOW=-1` to disable grouping
+3. Use `log.NewLogger().WithGroupWindow(-1).Build()` to explicitly disable grouping
 
 The new API provides more flexibility and cleaner configuration options.
 
