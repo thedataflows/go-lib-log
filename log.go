@@ -219,24 +219,17 @@ type BufferedRateLimitedWriter struct {
 }
 
 // newBufferedRateLimitedWriter is the internal constructor that handles all options.
-func newBufferedRateLimitedWriter(target io.Writer, bufferSize int, rateLimit, rateBurst int, groupWindow time.Duration, bufferingDisabled bool) *BufferedRateLimitedWriter {
-	// Get drop report interval from environment
-	dropReportIntervalSec := DEFAULT_DROP_REPORT_INTERVAL
-	if intervalStr := os.Getenv(ENV_LOG_DROP_REPORT_INTERVAL); intervalStr != "" {
-		if parsed, err := strconv.Atoi(intervalStr); err == nil && parsed > 0 {
-			dropReportIntervalSec = parsed
-		}
+func newBufferedRateLimitedWriter(target io.Writer, bufferSize, rateLimit, rateBurst int, groupWindow, dropReportInterval time.Duration, bufferingDisabled bool) *BufferedRateLimitedWriter {
+	// Get drop report interval from parameter or environment fallback
+	if dropReportInterval <= 0 {
+		dropReportInterval = time.Duration(
+			getEnvInt(ENV_LOG_DROP_REPORT_INTERVAL, DEFAULT_DROP_REPORT_INTERVAL),
+		) * time.Second
 	}
 
 	// Get group window from environment if not explicitly provided (groupWindow == 0)
 	if groupWindow == 0 {
-		groupWindowSec := DEFAULT_GROUP_WINDOW
-		if windowStr := os.Getenv(ENV_LOG_GROUP_WINDOW); windowStr != "" {
-			if parsed, err := strconv.Atoi(windowStr); err == nil && parsed >= 0 {
-				groupWindowSec = parsed
-			}
-		}
-		groupWindow = time.Duration(groupWindowSec) * time.Second
+		groupWindow = time.Duration(getEnvInt(ENV_LOG_GROUP_WINDOW, DEFAULT_GROUP_WINDOW)) * time.Second
 	}
 	// If groupWindow is negative, it means grouping is explicitly disabled
 	if groupWindow < 0 {
@@ -248,7 +241,7 @@ func newBufferedRateLimitedWriter(target io.Writer, bufferSize int, rateLimit, r
 		limiter:            rate.NewLimiter(rate.Limit(rateLimit), rateBurst),
 		buffer:             make(chan []byte, bufferSize),
 		closeSignal:        make(chan struct{}), // Initialize closeSignal
-		dropReportInterval: time.Duration(dropReportIntervalSec) * time.Second,
+		dropReportInterval: dropReportInterval,
 		grouper:            newEventGrouper(groupWindow, target),
 		bufferingDisabled:  bufferingDisabled,
 	}

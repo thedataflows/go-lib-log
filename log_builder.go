@@ -12,29 +12,31 @@ import (
 
 // LoggerBuilder provides a fluent interface for configuring and building CustomLogger instances.
 type LoggerBuilder struct {
-	output            io.Writer
-	bufferSize        int
-	rateLimit         int
-	rateBurst         int
-	groupWindow       time.Duration
-	bufferingDisabled bool
-	groupingDisabled  bool
-	logLevel          zerolog.Level
-	forceJSON         bool
+	output             io.Writer
+	bufferSize         int
+	rateLimit          int
+	rateBurst          int
+	groupWindow        time.Duration
+	dropReportInterval time.Duration
+	bufferingDisabled  bool
+	groupingDisabled   bool
+	logLevel           zerolog.Level
+	forceJSON          bool
 }
 
 // NewLogger creates a new LoggerBuilder with default configuration.
 // This is the only constructor function - all other configurations are done through the builder pattern.
 func NewLogger() *LoggerBuilder {
 	return &LoggerBuilder{
-		bufferSize:        -1, // Use default from environment
-		rateLimit:         -1, // Use default from environment
-		rateBurst:         -1, // Use default from environment
-		groupWindow:       0,  // Use default from environment
-		bufferingDisabled: false,
-		groupingDisabled:  false,
-		logLevel:          NoLevel, // Use default from environment
-		forceJSON:         false,
+		bufferSize:         -1, // Use default from environment
+		rateLimit:          -1, // Use default from environment
+		rateBurst:          -1, // Use default from environment
+		groupWindow:        0,  // Use default from environment
+		dropReportInterval: 0,  // Use default from environment
+		bufferingDisabled:  false,
+		groupingDisabled:   false,
+		logLevel:           NoLevel, // Use default from environment
+		forceJSON:          false,
 	}
 }
 
@@ -66,6 +68,13 @@ func (lb *LoggerBuilder) WithRateBurst(burst int) *LoggerBuilder {
 // Use 0 for default from environment, negative values to disable grouping.
 func (lb *LoggerBuilder) WithGroupWindow(window time.Duration) *LoggerBuilder {
 	lb.groupWindow = window
+	return lb
+}
+
+// WithDropReportInterval sets the interval for reporting dropped messages.
+// Use 0 for default from environment, negative values to disable drop reporting.
+func (lb *LoggerBuilder) WithDropReportInterval(interval time.Duration) *LoggerBuilder {
+	lb.dropReportInterval = interval
 	return lb
 }
 
@@ -115,18 +124,24 @@ func (lb *LoggerBuilder) Build() *CustomLogger {
 
 	// Get configuration values, using environment defaults if not set
 	bufferSize, rateLimit, rateBurst := lb.getBufferConfig()
-	logLevel := lb.getLogLevel()
-	groupWindow := lb.getGroupWindow()
 
 	// Create the buffered rate limited writer
 	bufferedWriter := newBufferedRateLimitedWriter(
-		output, bufferSize, rateLimit, rateBurst, groupWindow, lb.getBufferingDisabled())
+		output,
+		bufferSize,
+		rateLimit,
+		rateBurst,
+		lb.getGroupWindow(),
+		lb.getDropReportInterval(),
+		lb.getBufferingDisabled(),
+	)
 
 	// Create the zerolog logger
 	zl := zerolog.New(bufferedWriter).
 		With().
 		Timestamp().
-		Logger().Level(logLevel)
+		Logger().
+		Level(lb.getLogLevel())
 
 	return &CustomLogger{
 		Logger:     zl,
@@ -191,6 +206,17 @@ func (lb *LoggerBuilder) getGroupWindow() time.Duration {
 	// Use environment default
 	groupWindowSec := getEnvInt(ENV_LOG_GROUP_WINDOW, DEFAULT_GROUP_WINDOW)
 	return time.Duration(groupWindowSec) * time.Second
+}
+
+// getDropReportInterval returns the drop report interval, using builder value or environment default.
+func (lb *LoggerBuilder) getDropReportInterval() time.Duration {
+	if lb.dropReportInterval != 0 {
+		return lb.dropReportInterval
+	}
+
+	// Use environment default
+	dropReportIntervalSec := getEnvInt(ENV_LOG_DROP_REPORT_INTERVAL, DEFAULT_DROP_REPORT_INTERVAL)
+	return time.Duration(dropReportIntervalSec) * time.Second
 }
 
 // getEnvInt parses an integer from environment variable with fallback to default.
