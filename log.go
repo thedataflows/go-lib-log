@@ -765,7 +765,7 @@ func (w *BufferedRateLimitedWriter) Flush() {
 	})
 
 	// Simple approach: wait for buffer to drain
-	for i := 0; i < 100; i++ { // Max 100ms
+	for range 100 { // Max 100ms
 		if len(w.buffer) == 0 {
 			break
 		}

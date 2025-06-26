@@ -48,7 +48,7 @@ func setupTestLogger(t *testing.T, bufferSize, rateLimit, rateBurst int, output 
 
 	if output != nil {
 		// Create a custom logger that uses our rate-limited writer with the test output
-		bufferedWriter := newBufferedRateLimitedWriter(output, bufferSize, rateLimit, rateBurst, 0, false)
+		bufferedWriter := newBufferedRateLimitedWriter(output, bufferSize, rateLimit, rateBurst, 0, 0, false)
 		zl := zerolog.New(bufferedWriter).
 			With().
 			Timestamp().
@@ -1279,12 +1279,12 @@ func TestGlobalLoggerConcurrency(t *testing.T) {
 		messagesPerGoroutine := 10
 
 		var wg sync.WaitGroup
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			wg.Add(1)
 			go func(gNum int) {
 				defer wg.Done()
 				logger := Logger() // Should be safe to call concurrently
-				for j := 0; j < messagesPerGoroutine; j++ {
+				for j := range messagesPerGoroutine {
 					logger.Info().Msgf("Concurrent message from goroutine %d, message %d", gNum, j)
 				}
 			}(i)
@@ -1497,6 +1497,41 @@ func TestGlobalLoggerEdgeCases(t *testing.T) {
 			tt.Error("Expected to find message from new logger")
 		}
 	})
+}
+
+func TestDropReportIntervalBuilder(t *testing.T) {
+	var buf bytes.Buffer
+
+	// Test custom drop report interval via builder
+	logger := NewLogger().
+		WithOutput(&buf).
+		WithBufferSize(1).                              // Small buffer to force drops
+		WithDropReportInterval(500 * time.Millisecond). // 0.5 second interval
+		Build()
+	defer logger.Close()
+
+	// Send many messages to force drops
+	for i := range 20 {
+		logger.Info().Msgf("Test message %d", i)
+	}
+
+	// Wait for drop report
+	time.Sleep(1 * time.Second)
+	logger.Close()
+
+	output := buf.String()
+
+	// Should contain drop report message
+	if !strings.Contains(output, "Log messages dropped due to backpressure") {
+		t.Errorf("Expected drop report message in output")
+	}
+
+	// Should contain interval information (0.5 seconds = 0 when formatted as integer)
+	if !strings.Contains(output, `"interval_seconds":"0"`) {
+		t.Errorf("Expected interval_seconds field with value '0' for 0.5 second interval")
+	}
+
+	t.Logf("Drop interval builder test output:\n%s", output)
 }
 
 // safeBuffer is a thread-safe buffer wrapper for concurrent testing
