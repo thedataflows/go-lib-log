@@ -4,8 +4,13 @@
 package log
 
 import (
+	"fmt"
+	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
+
+	"github.com/rs/zerolog"
 )
 
 var (
@@ -21,6 +26,7 @@ var (
 
 // init initializes the global logger with the default configuration
 func init() {
+	zerolog.ErrorStackMarshaler = StackMarshaller
 	globalLogger.Store(globalLoggerBuilder.Build())
 }
 
@@ -136,4 +142,19 @@ func Close() {
 	if currentLogger := globalLogger.Load(); currentLogger != nil {
 		currentLogger.Close()
 	}
+}
+
+// StackMarshaller is a basic marshaller that outputs the current stack trace to stderr.
+func StackMarshaller(_ error) interface{} {
+	var pcs [32]uintptr
+	n := runtime.Callers(3, pcs[:])
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		frame, more := frames.Next()
+		_, _ = fmt.Fprintf(os.Stderr, "%s\n\t%s:%d\n", frame.Function, frame.File, frame.Line)
+		if !more {
+			break
+		}
+	}
+	return nil
 }

@@ -111,6 +111,9 @@ func main() {
 		time.Sleep(250 * time.Millisecond) // Send them slower than rate limit to ensure they get through
 	}
 
+	logger.Error().Stack().Err(fmt.Errorf("simulated error for stack trace")).Str("section", "4-recovery").Msg("Logging an error with stack trace after overflow.")
+	logger.Close()
+
 	fmt.Printf("\n\n--- Demo Complete ---\n")
 	fmt.Println("Review the output above. You should have seen:")
 	fmt.Println("1. Initial messages logged successfully.")

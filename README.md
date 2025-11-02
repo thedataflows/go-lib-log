@@ -417,6 +417,15 @@ func main() {
 }
 ```
 
+### Stack Traces
+
+The library now includes a stack trace marshaller that outputs the current stack trace to stderr whenever an error is logged. This is useful for debugging and understanding the context of errors.
+`Stack()` must be called before `Err()`.
+
+```go
+logger.Error().Stack().Err(errors.New("something went wrong")).Msg("An error occurred")
+```
+
 ## Migration from Previous Versions
 
 **For existing users**: The library now uses a modern builder pattern API. If you prefer the previous behavior without event grouping, you can:
