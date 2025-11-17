@@ -14,7 +14,7 @@ This library aims to provide a consistent logging interface with advanced featur
 
 * **Multiple Log Levels**: Supports Trace, Debug, Info, Warn, Error, Fatal, and Panic levels
 * **Structured Logging**: Output in JSON or human-readable console format
-* **Builder Pattern API**: Modern, chainable configuration using `NewLogger()`
+* **Builder Pattern API**: Modern, chainable configuration using `NewLoggerBuilder()`
 * **Environment Variable Configuration**: Easy setup in different environments without code changes
 * **Compatibility Layer**: Maintains compatibility with `go-logging.v1`
 
@@ -96,7 +96,7 @@ import (
 
 func main() {
  // Create a logger using the builder pattern
- logger := log.NewLogger().Build()
+ logger := log.NewLoggerBuilder().Build()
  // Ensure to close it on application shutdown to flush buffers
  defer logger.Close()
 
@@ -107,10 +107,9 @@ func main() {
  logger.Error().Err(err).Msg("An error occurred")
 
  // Example of creating logger with custom configuration
- customLogger := log.NewLogger().
+ customLogger := log.NewLoggerBuilder().
   WithBufferSize(1000).
   WithRateLimit(500).
-  AsJSON().
   Build()
  defer customLogger.Close()
 
@@ -143,14 +142,14 @@ The logger can be configured using the following environment variables:
   * Default: `50000`.
 * `LOG_RATE_BURST`: Sets the burst size for the rate limiter.
   * Default: `10000`.
-* `LOG_DISABLE_BUFFERING`: Disables buffering and writes log messages directly to output.
+* `LOG_BUFFERING_DISABLED`: Disables buffering and writes log messages directly to output.
   * Supported values: `true`, `1`, `yes` (to disable buffering).
   * Default: `false` (buffering enabled).
   * When disabled, messages are written immediately with rate limiting only.
 * `LOG_GROUP_WINDOW`: Sets the time window (in seconds) for grouping similar log events.
   * Default: `1` (1 second, >= 0 enables event grouping with 0 using default value).
   * Set to `-1` to disable event grouping.
-* `ENV_LOG_DROP_REPORT_INTERVAL`: Sets the interval (in seconds) for reporting dropped log messages.
+* `LOG_DROP_REPORT_INTERVAL`: Sets the interval (in seconds) for reporting dropped log messages.
   * Default: `10`.
 
 ## Event Grouping
@@ -183,7 +182,7 @@ When messages are grouped, the final log entry includes additional fields:
 
 ```go
 // Default logger with event grouping enabled (1 second window)
-logger := log.NewLogger().Build()
+logger := log.NewLoggerBuilder().Build()
 defer logger.Close()
 
 // These messages will be grouped if sent within 1 second
@@ -192,23 +191,23 @@ logger.Error().Msg("Database connection failed") // Will be grouped
 logger.Error().Msg("Database connection failed") // Will be grouped
 
 // Create logger with custom grouping window
-logger := log.NewLogger().WithGroupWindow(2 * time.Second).Build()
+logger := log.NewLoggerBuilder().WithGroupWindow(2 * time.Second).Build()
 defer logger.Close()
 
 // Create logger with grouping explicitly disabled
-logger := log.NewLogger().WithoutGrouping().Build()
+logger := log.NewLoggerBuilder().WithoutGrouping().Build()
 defer logger.Close()
 
 // Different messages won't be grouped
 logger.Error().Msg("Redis connection failed") // Separate message
 
 // Environment variable configuration
-os.Setenv("LOG_GROUP_WINDOW", "2") // 2 second window
-logger := log.NewLogger().Build() // Will use environment configuration
+os.Setenv(log.ENV_LOG_GROUP_WINDOW, "2") // 2 second window
+logger := log.NewLoggerBuilder().Build() // Will use environment configuration
 
 // Disable grouping via environment variable
-os.Setenv("LOG_GROUP_WINDOW", "-1") // Disables grouping
-logger := log.NewLogger().Build()
+os.Setenv(log.ENV_LOG_GROUP_WINDOW, "-1") // Disables grouping
+logger := log.NewLoggerBuilder().Build()
 ```
 
 ## Buffering Control
@@ -225,7 +224,7 @@ In buffered mode, log messages are queued in an internal buffer and processed as
 
 ```go
 // Default buffered logger
-logger := log.NewLogger().Build()
+logger := log.NewLoggerBuilder().Build()
 defer logger.Close() // Important: ensures all buffered messages are flushed
 
 logger.Info().Msg("This message goes to the buffer first")
@@ -242,16 +241,16 @@ In unbuffered mode, log messages are written directly to the output with rate li
 #### Enable via Environment Variable
 
 ```bash
-export LOG_DISABLE_BUFFERING=true
+export LOG_BUFFERING_DISABLED=true
 # or
-export LOG_DISABLE_BUFFERING=1
+export LOG_BUFFERING_DISABLED=1
 # or
-export LOG_DISABLE_BUFFERING=yes
+export LOG_BUFFERING_DISABLED=yes
 ```
 
 ```go
 // Will use unbuffered mode due to environment variable
-logger := log.NewLogger().Build()
+logger := log.NewLoggerBuilder().Build()
 logger.Info().Msg("This message is written immediately")
 ```
 
@@ -259,11 +258,11 @@ logger.Info().Msg("This message is written immediately")
 
 ```go
 // Explicitly create unbuffered logger
-logger := log.NewLogger().WithoutBuffering().Build()
+logger := log.NewLoggerBuilder().WithoutBuffering().Build()
 logger.Info().Msg("This message is written immediately")
 
 // Unbuffered with event grouping disabled
-logger := log.NewLogger().WithoutBuffering().WithoutGrouping().Build()
+logger := log.NewLoggerBuilder().WithoutBuffering().WithoutGrouping().Build()
 logger.Info().Msg("Immediate write, no grouping")
 ```
 
@@ -299,9 +298,8 @@ import (
 
 func main() {
  // Create logger with programmatic configuration
- logger := log.NewLogger().
+ logger := log.NewLoggerBuilder().
   WithLogLevelString("debug").
-  AsJSON().
   WithBufferSize(10000).
   WithRateLimit(1000).
   Build()
@@ -311,7 +309,7 @@ func main() {
 
  // For more advanced custom logger setup with custom output:
  customOutput := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
- customLogger := log.NewLogger().
+ customLogger := log.NewLoggerBuilder().
   WithOutput(customOutput).
   WithLogLevel(zerolog.InfoLevel).
   Build()
@@ -327,26 +325,26 @@ The library uses a builder pattern for creating loggers with flexible configurat
 
 ```go
 // Default logger with event grouping enabled (1 second window)
-logger := log.NewLogger().Build()
+logger := log.NewLoggerBuilder().Build()
 
 // Logger with custom event grouping window
-logger := log.NewLogger().WithGroupWindow(5 * time.Second).Build()
+logger := log.NewLoggerBuilder().WithGroupWindow(5 * time.Second).Build()
 
 // Logger with event grouping explicitly disabled
-logger := log.NewLogger().WithoutGrouping().Build()
+logger := log.NewLoggerBuilder().WithGroupWindow(-1).Build()
 
 // JSON-only logger (always outputs JSON format)
-logger := log.NewLogger().AsJSON().Build()
+logger := log.NewLoggerBuilder().WithLogFormat(log.LOG_FORMAT_JSON).Build()
 
 // High-performance buffered logger with custom configuration
-logger := log.NewLogger().
+logger := log.NewLoggerBuilder().
     WithBufferSize(50000).
     WithRateLimit(10000).
     WithGroupWindow(2 * time.Second).
     Build()
 
 // Unbuffered logger for critical logging
-logger := log.NewLogger().
+logger := log.NewLoggerBuilder().
     WithoutBuffering().
     WithoutGrouping().
     Build()
@@ -357,7 +355,7 @@ logger := log.NewLogger().
 **Always call `Close()` on your logger instances** to ensure proper cleanup and message flushing:
 
 ```go
-logger := log.NewLogger().Build()
+logger := log.NewLoggerBuilder().Build()
 defer logger.Close() // Critical for proper cleanup
 ```
 
@@ -379,7 +377,7 @@ The `Close()` method performs several important operations:
 
 ```go
 func main() {
-    logger := log.NewLogger().Build()
+    logger := log.NewLoggerBuilder().Build()
     defer logger.Close() // Ensures all messages are flushed
 
     // Send many identical messages - these will be grouped
@@ -411,7 +409,7 @@ func main() {
 import log "github.com/thedataflows/go-lib-log"
 
 func main() {
-    logger := log.NewLogger().Build()
+    logger := log.NewLoggerBuilder().Build()
     defer logger.Close()
     logger.Info().Msg("Using instance logger")
 }
@@ -425,16 +423,6 @@ The library now includes a stack trace marshaller that outputs the current stack
 ```go
 logger.Error().Stack().Err(errors.New("something went wrong")).Msg("An error occurred")
 ```
-
-## Migration from Previous Versions
-
-**For existing users**: The library now uses a modern builder pattern API. If you prefer the previous behavior without event grouping, you can:
-
-1. Use `log.NewLogger().WithoutGrouping().Build()` instead of `log.NewLogger().Build()`
-2. Set the environment variable `LOG_GROUP_WINDOW=-1` to disable grouping
-3. Use `log.NewLogger().WithGroupWindow(-1).Build()` to explicitly disable grouping
-
-The new API provides more flexibility and cleaner configuration options.
 
 ## License
 

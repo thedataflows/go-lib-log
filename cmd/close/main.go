@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	logger := log.NewLogger().Build()
+	logger := log.NewLoggerBuilder().Build()
 	defer logger.Close() // Ensures all messages are flushed
 
 	// Send many identical messages - these will be grouped

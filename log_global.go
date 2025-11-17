@@ -19,7 +19,7 @@ var (
 	globalConfigMutex sync.Mutex
 	// globalLoggerBuilder is the builder instance used for the global Logger.
 	// This preserves user configuration when functions like SetGlobalLoggerLogFormat are called.
-	globalLoggerBuilder = NewLogger()
+	globalLoggerBuilder = NewLoggerBuilder()
 	// globalLogger is the global instance of the CustomLogger using atomic pointer for lock-free reads
 	globalLogger atomic.Pointer[CustomLogger]
 )
@@ -126,7 +126,7 @@ func Logger() *CustomLogger {
 	}
 
 	if globalLoggerBuilder == nil {
-		globalLoggerBuilder = NewLogger()
+		globalLoggerBuilder = NewLoggerBuilder()
 	}
 	logger = globalLoggerBuilder.Build()
 	globalLogger.Store(logger)

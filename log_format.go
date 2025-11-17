@@ -32,9 +32,7 @@ func (f LogFormat) String() string {
 }
 
 // ParseLogFormat converts a string representation of a log format into a LogFormat type.
-// It returns LOG_FORMAT_CONSOLE if the string is empty or "console",
-// LOG_FORMAT_JSON if the string is "json".
-// It returns an error for any other invalid input.
+// It returns LOG_FORMAT_CONSOLE and an error for any other invalid input.
 func ParseLogFormat(s string) (LogFormat, error) {
 	switch s {
 	case "", "console": // empty defaults to console
@@ -85,14 +83,7 @@ func SetGlobalLoggerLogFormat(logFormat string) error {
 	}
 
 	// Update the global builder's format setting and rebuild
-	switch format {
-	case LOG_FORMAT_JSON:
-		globalLoggerBuilder.forceJSON = true
-	default:
-		globalLoggerBuilder.forceJSON = false
-	}
-
-	// Rebuild the logger with preserved settings
+	globalLoggerBuilder.logFormat = format
 	globalLogger.Store(globalLoggerBuilder.Build())
 
 	return nil

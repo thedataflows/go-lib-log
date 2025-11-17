@@ -1,6 +1,7 @@
 package log
 
 import (
+	"context"
 	"io"
 	"os"
 	"strconv"
@@ -8,6 +9,32 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/time/rate"
+)
+
+const (
+	// ENV_LOG_BUFFER_SIZE is the environment variable for the log buffer size.
+	ENV_LOG_BUFFER_SIZE = "LOG_BUFFER_SIZE"
+	// ENV_LOG_RATE_LIMIT is the environment variable for the log rate limit.
+	ENV_LOG_RATE_LIMIT = "LOG_RATE_LIMIT" // messages per second
+	// ENV_LOG_RATE_BURST is the environment variable for the log rate burst size.
+	ENV_LOG_RATE_BURST = "LOG_RATE_BURST" // burst size
+	// ENV_LOG_DROP_REPORT_INTERVAL is the environment variable for the log drop report interval.
+	ENV_LOG_DROP_REPORT_INTERVAL = "LOG_DROP_REPORT_INTERVAL" // seconds between drop reports
+	// ENV_LOG_GROUP_WINDOW is the environment variable for the log event grouping window.
+	ENV_LOG_GROUP_WINDOW = "LOG_GROUP_WINDOW" // seconds for event grouping window
+	// ENV_LOG_BUFFERING_DISABLED is the environment variable to disable buffering.
+	ENV_LOG_BUFFERING_DISABLED = "LOG_BUFFERING_DISABLED" // set to "true" to disable buffering
+	// DEFAULT_BUFFER_SIZE is the default buffer size for the logger.
+	DEFAULT_BUFFER_SIZE = 100000 // High throughput: 100K buffer
+	// DEFAULT_RATE_LIMIT is the default rate limit for the logger in messages per second.
+	DEFAULT_RATE_LIMIT = 50000 // High throughput: 50K msgs/sec
+	// DEFAULT_RATE_BURST is the default rate burst for the logger.
+	DEFAULT_RATE_BURST = 10000 // High throughput: 10K burst
+	// DEFAULT_DROP_REPORT_INTERVAL is the default interval in seconds for reporting dropped messages.
+	DEFAULT_DROP_REPORT_INTERVAL = 10 // Report drops every 10 seconds
+	// DEFAULT_GROUP_WINDOW is the default window in seconds for grouping similar events.
+	DEFAULT_GROUP_WINDOW = 1 // Group events over 1 second window
 )
 
 // LoggerBuilder provides a fluent interface for configuring and building CustomLogger instances.
@@ -19,24 +46,30 @@ type LoggerBuilder struct {
 	groupWindow        time.Duration
 	dropReportInterval time.Duration
 	bufferingDisabled  bool
-	groupingDisabled   bool
 	logLevel           zerolog.Level
-	forceJSON          bool
+	logFormat          LogFormat
 }
 
-// NewLogger creates a new LoggerBuilder with default configuration.
+// getBufferingDisabled checks if buffering is explicitly disabled via environment variable.
+func getBufferingDisabled() bool {
+	v := strings.ToLower(os.Getenv(ENV_LOG_BUFFERING_DISABLED))
+	return v == "true" || v == "1" || v == "yes" || v == "on"
+}
+
+// NewLoggerBuilder creates a new LoggerBuilder with default configuration.
 // This is the only constructor function - all other configurations are done through the builder pattern.
-func NewLogger() *LoggerBuilder {
+func NewLoggerBuilder() *LoggerBuilder {
+	logFormat, _ := ParseLogFormat(os.Getenv(ENV_LOG_FORMAT))
+	logLevel, _ := ParseLevel(os.Getenv(ENV_LOG_LEVEL))
 	return &LoggerBuilder{
-		bufferSize:         -1, // Use default from environment
-		rateLimit:          -1, // Use default from environment
-		rateBurst:          -1, // Use default from environment
-		groupWindow:        0,  // Use default from environment
-		dropReportInterval: 0,  // Use default from environment
-		bufferingDisabled:  false,
-		groupingDisabled:   false,
-		logLevel:           NoLevel, // Use default from environment
-		forceJSON:          false,
+		bufferSize:         getEnvInt(ENV_LOG_BUFFER_SIZE, DEFAULT_BUFFER_SIZE),
+		rateLimit:          getEnvInt(ENV_LOG_RATE_LIMIT, DEFAULT_RATE_LIMIT),
+		rateBurst:          getEnvInt(ENV_LOG_RATE_BURST, DEFAULT_RATE_BURST),
+		groupWindow:        time.Duration(getEnvInt(ENV_LOG_GROUP_WINDOW, DEFAULT_GROUP_WINDOW)) * time.Second,
+		dropReportInterval: time.Duration(getEnvInt(ENV_LOG_DROP_REPORT_INTERVAL, DEFAULT_DROP_REPORT_INTERVAL)) * time.Second,
+		bufferingDisabled:  getBufferingDisabled(),
+		logLevel:           logLevel,
+		logFormat:          logFormat,
 	}
 }
 
@@ -84,12 +117,6 @@ func (lb *LoggerBuilder) WithoutBuffering() *LoggerBuilder {
 	return lb
 }
 
-// WithoutGrouping disables event grouping for the logger.
-func (lb *LoggerBuilder) WithoutGrouping() *LoggerBuilder {
-	lb.groupingDisabled = true
-	return lb
-}
-
 // WithLogLevel sets the log level.
 func (lb *LoggerBuilder) WithLogLevel(level zerolog.Level) *LoggerBuilder {
 	lb.logLevel = level
@@ -104,9 +131,9 @@ func (lb *LoggerBuilder) WithLogLevelString(level string) *LoggerBuilder {
 	return lb
 }
 
-// AsJSON forces JSON output format regardless of environment settings.
-func (lb *LoggerBuilder) AsJSON() *LoggerBuilder {
-	lb.forceJSON = true
+// WithLogFormat sets the log format.
+func (lb *LoggerBuilder) WithLogFormat(format LogFormat) *LoggerBuilder {
+	lb.logFormat = format
 	return lb
 }
 
@@ -115,25 +142,26 @@ func (lb *LoggerBuilder) Build() *CustomLogger {
 	// Determine output writer
 	output := lb.output
 	if output == nil {
-		if lb.forceJSON {
+		switch lb.logFormat {
+		case LOG_FORMAT_JSON:
 			output = os.Stderr
-		} else {
-			output = getFormatBasedOutput()
+		default:
+			output = zerolog.ConsoleWriter{
+				Out:        PreferredWriter(),
+				TimeFormat: time.RFC3339,
+			}
 		}
 	}
-
-	// Get configuration values, using environment defaults if not set
-	bufferSize, rateLimit, rateBurst := lb.getBufferConfig()
 
 	// Create the buffered rate limited writer
 	bufferedWriter := newBufferedRateLimitedWriter(
 		output,
-		bufferSize,
-		rateLimit,
-		rateBurst,
-		lb.getGroupWindow(),
-		lb.getDropReportInterval(),
-		lb.getBufferingDisabled(),
+		lb.bufferSize,
+		lb.rateLimit,
+		lb.rateBurst,
+		lb.groupWindow,
+		lb.dropReportInterval,
+		lb.bufferingDisabled,
 	)
 
 	// Create the zerolog logger
@@ -146,43 +174,9 @@ func (lb *LoggerBuilder) Build() *CustomLogger {
 	return &CustomLogger{
 		Logger:     zl,
 		writer:     bufferedWriter,
-		bufferSize: bufferSize,
+		bufferSize: lb.bufferSize,
+		logFormat:  lb.logFormat,
 	}
-}
-
-// getBufferingDisabled checks if buffering is explicitly disabled or set via environment variable.
-func (lb *LoggerBuilder) getBufferingDisabled() bool {
-	// If buffering is explicitly disabled, return true
-	if lb.bufferingDisabled {
-		return true
-	}
-
-	// Otherwise, check environment variable
-	v := strings.ToLower(os.Getenv(ENV_LOG_DISABLE_BUFFERING))
-	return v == "true" || v == "1" || v == "yes" || v == "on"
-}
-
-// getBufferConfig returns buffer configuration, using builder values or environment defaults.
-func (lb *LoggerBuilder) getBufferConfig() (bufferSize, rateLimit, rateBurst int) {
-	if lb.bufferSize > 0 {
-		bufferSize = lb.bufferSize
-	} else {
-		bufferSize = getEnvInt(ENV_LOG_BUFFER_SIZE, DEFAULT_BUFFER_SIZE)
-	}
-
-	if lb.rateLimit > 0 {
-		rateLimit = lb.rateLimit
-	} else {
-		rateLimit = getEnvInt(ENV_LOG_RATE_LIMIT, DEFAULT_RATE_LIMIT)
-	}
-
-	if lb.rateBurst > 0 {
-		rateBurst = lb.rateBurst
-	} else {
-		rateBurst = getEnvInt(ENV_LOG_RATE_BURST, DEFAULT_RATE_BURST)
-	}
-
-	return bufferSize, rateLimit, rateBurst
 }
 
 // getLogLevel returns the log level, using builder value or environment default.
@@ -190,33 +184,7 @@ func (lb *LoggerBuilder) getLogLevel() zerolog.Level {
 	if lb.logLevel != NoLevel {
 		return lb.logLevel
 	}
-	return getLogLevel()
-}
-
-// getGroupWindow returns the group window duration, using builder value or environment default.
-func (lb *LoggerBuilder) getGroupWindow() time.Duration {
-	if lb.groupingDisabled {
-		return -1 // Explicitly disabled
-	}
-
-	if lb.groupWindow != 0 {
-		return lb.groupWindow
-	}
-
-	// Use environment default
-	groupWindowSec := getEnvInt(ENV_LOG_GROUP_WINDOW, DEFAULT_GROUP_WINDOW)
-	return time.Duration(groupWindowSec) * time.Second
-}
-
-// getDropReportInterval returns the drop report interval, using builder value or environment default.
-func (lb *LoggerBuilder) getDropReportInterval() time.Duration {
-	if lb.dropReportInterval != 0 {
-		return lb.dropReportInterval
-	}
-
-	// Use environment default
-	dropReportIntervalSec := getEnvInt(ENV_LOG_DROP_REPORT_INTERVAL, DEFAULT_DROP_REPORT_INTERVAL)
-	return time.Duration(dropReportIntervalSec) * time.Second
+	return InfoLevel
 }
 
 // getEnvInt parses an integer from environment variable with fallback to default.
@@ -227,4 +195,43 @@ func getEnvInt(envVar string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+// newBufferedRateLimitedWriter is the internal constructor that handles all options.
+func newBufferedRateLimitedWriter(target io.Writer, bufferSize, rateLimit, rateBurst int, groupWindow, dropReportInterval time.Duration, bufferingDisabled bool) *BufferedRateLimitedWriter {
+	// Get drop report interval from parameter or environment fallback
+	if dropReportInterval <= 0 {
+		dropReportInterval = time.Duration(
+			getEnvInt(ENV_LOG_DROP_REPORT_INTERVAL, DEFAULT_DROP_REPORT_INTERVAL),
+		) * time.Second
+	}
+
+	// Get group window from environment if not explicitly provided (groupWindow == 0)
+	if groupWindow == 0 {
+		groupWindow = time.Duration(getEnvInt(ENV_LOG_GROUP_WINDOW, DEFAULT_GROUP_WINDOW)) * time.Second
+	}
+	// If groupWindow is negative, it means grouping is explicitly disabled
+	if groupWindow < 0 {
+		groupWindow = 0
+	}
+
+	w := &BufferedRateLimitedWriter{
+		target:             target,
+		limiter:            rate.NewLimiter(rate.Limit(rateLimit), rateBurst),
+		buffer:             make(chan []byte, bufferSize),
+		closeSignal:        make(chan struct{}), // Initialize closeSignal
+		dropReportInterval: dropReportInterval,
+		grouper:            newEventGrouper(groupWindow, target),
+		bufferingDisabled:  bufferingDisabled,
+	}
+
+	// Create cancellable context for rate limiter
+	w.ctx, w.cancelFunc = context.WithCancel(context.Background())
+
+	// Pre-compute static parts of drop report message for performance
+	w.intervalSecondsStr = strconv.FormatFloat(w.dropReportInterval.Seconds(), 'f', 0, 64)
+	w.dropReportPrefix = []byte(`{"time":"`)
+	w.dropReportSuffix = []byte(`","level":"warn","message":"Log messages dropped due to backpressure","dropped_count":`)
+
+	return w
 }

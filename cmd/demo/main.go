@@ -21,16 +21,14 @@ func main() {
 	dropReportIntervalDemo := 3 // Short interval for drop reports (seconds)
 	groupWindowDemo := 2        // Short window for event grouping (seconds)
 
-	_ = os.Setenv("LOG_BUFFER_SIZE", strconv.Itoa(bufferSizeDemo))
-	_ = os.Setenv("LOG_RATE_LIMIT", strconv.Itoa(rateLimitDemo))
-	_ = os.Setenv("LOG_RATE_BURST", strconv.Itoa(rateBurstDemo))
-	_ = os.Setenv("LOG_DROP_REPORT_INTERVAL", strconv.Itoa(dropReportIntervalDemo))
-	_ = os.Setenv("LOG_GROUP_WINDOW", strconv.Itoa(groupWindowDemo))
-	_ = os.Setenv("LOG_LEVEL", "info") // Set to info to see standard messages
-	_ = os.Setenv("LOG_FORMAT", "console")
+	_ = os.Setenv(log.ENV_LOG_BUFFER_SIZE, strconv.Itoa(bufferSizeDemo))
+	_ = os.Setenv(log.ENV_LOG_RATE_LIMIT, strconv.Itoa(rateLimitDemo))
+	_ = os.Setenv(log.ENV_LOG_RATE_BURST, strconv.Itoa(rateBurstDemo))
+	_ = os.Setenv(log.ENV_LOG_DROP_REPORT_INTERVAL, strconv.Itoa(dropReportIntervalDemo))
+	_ = os.Setenv(log.ENV_LOG_GROUP_WINDOW, strconv.Itoa(groupWindowDemo))
 
 	// Initialize the global logger with event grouping enabled using builder pattern
-	logger := log.NewLogger().
+	logger := log.NewLoggerBuilder().
 		WithBufferSize(bufferSizeDemo).
 		WithRateLimit(rateLimitDemo).
 		WithRateBurst(rateBurstDemo).
@@ -45,8 +43,8 @@ func main() {
 	fmt.Printf("- Rate Burst: %d (Default: %d)\n", rateBurstDemo, log.DEFAULT_RATE_BURST)
 	fmt.Printf("- Drop Report Interval: %d sec (Default: %d)\n", dropReportIntervalDemo, log.DEFAULT_DROP_REPORT_INTERVAL)
 	fmt.Printf("- Event Group Window: %d sec (Default: %d)\n", groupWindowDemo, log.DEFAULT_GROUP_WINDOW)
-	fmt.Printf("- Log Level: %s\n", os.Getenv("LOG_LEVEL"))
-	fmt.Printf("- Log Format: %s\n", os.Getenv("LOG_FORMAT"))
+	fmt.Printf("- Log Level: %s\n", logger.GetLevel().String())
+	fmt.Printf("- Log Format: %s\n", logger.LogFormat().String())
 
 	// --- 1. Normal Logging ---
 	fmt.Printf("\n--- Section 1: Normal Logging ---\n")

@@ -61,8 +61,8 @@ func setupTestLogger(t *testing.T, bufferSize, rateLimit, rateBurst int, output 
 		}
 		return logger
 	} else {
-		// Use normal NewLogger().Build() when no output override is needed
-		return NewLogger().Build()
+		// Use normal NewLoggerBuilder().Build() when no output override is needed
+		return NewLoggerBuilder().Build()
 	}
 }
 
@@ -76,7 +76,7 @@ func TestNewLoggerWithEnvironmentVariables(t *testing.T) {
 		_ = os.Unsetenv(ENV_LOG_RATE_LIMIT)
 		_ = os.Unsetenv(ENV_LOG_RATE_BURST)
 
-		logger := NewLogger().Build()
+		logger := NewLoggerBuilder().Build()
 		defer logger.Close()
 
 		// Check defaults - we can only check buffer size directly now
@@ -94,7 +94,7 @@ func TestNewLoggerWithEnvironmentVariables(t *testing.T) {
 		_ = os.Setenv(ENV_LOG_RATE_LIMIT, "50")
 		_ = os.Setenv(ENV_LOG_RATE_BURST, "25")
 
-		logger := NewLogger().Build()
+		logger := NewLoggerBuilder().Build()
 		defer logger.Close()
 
 		// Check custom values - we can only check buffer size directly now
@@ -110,7 +110,7 @@ func TestNewLoggerWithEnvironmentVariables(t *testing.T) {
 		_ = os.Setenv(ENV_LOG_RATE_LIMIT, "-10")
 		_ = os.Setenv(ENV_LOG_RATE_BURST, "not_a_number")
 
-		logger := NewLogger().Build()
+		logger := NewLoggerBuilder().Build()
 		defer logger.Close()
 
 		// Should fall back to defaults
@@ -303,7 +303,7 @@ func TestLogLevels(t *testing.T) {
 	_ = os.Setenv(ENV_LOG_RATE_LIMIT, "100")
 	_ = os.Setenv(ENV_LOG_RATE_BURST, "50")
 
-	logger := NewLogger().WithOutput(&buf).Build()
+	logger := NewLoggerBuilder().WithOutput(&buf).Build()
 	defer logger.Close()
 
 	// Send messages at different levels
@@ -501,7 +501,7 @@ func TestEventGrouping(t *testing.T) {
 		logger := setupTestLogger(tt, 10, 100, 10, &buf)
 
 		// Create a new logger with grouping disabled
-		groupedLogger := NewLogger().WithoutGrouping().Build()
+		groupedLogger := NewLoggerBuilder().WithGroupWindow(-1).Build()
 		defer groupedLogger.Close()
 
 		// All messages should be written normally
@@ -535,7 +535,7 @@ func TestEventGrouping(t *testing.T) {
 		_ = os.Setenv(ENV_LOG_LEVEL, "info")
 
 		// Use the main constructor with grouping
-		logger := NewLogger().WithGroupWindow(500 * time.Millisecond).Build()
+		logger := NewLoggerBuilder().WithGroupWindow(500 * time.Millisecond).Build()
 		defer logger.Close()
 
 		// Send the same message multiple times quickly
@@ -550,7 +550,7 @@ func TestEventGrouping(t *testing.T) {
 
 	t.Run("different_messages_not_grouped", func(tt *testing.T) {
 		// Test that different messages are not grouped together using main constructor
-		logger := NewLogger().WithGroupWindow(500 * time.Millisecond).Build()
+		logger := NewLoggerBuilder().WithGroupWindow(500 * time.Millisecond).Build()
 		defer logger.Close()
 
 		// Send different messages
@@ -575,7 +575,7 @@ func TestEventGrouping(t *testing.T) {
 
 		_ = os.Setenv(ENV_LOG_LEVEL, "debug")
 
-		logger := NewLogger().WithGroupWindow(500 * time.Millisecond).Build()
+		logger := NewLoggerBuilder().WithGroupWindow(500 * time.Millisecond).Build()
 		defer logger.Close()
 
 		// Send same message at different levels
@@ -603,12 +603,12 @@ func TestEventGrouping(t *testing.T) {
 		_ = os.Setenv(ENV_LOG_GROUP_WINDOW, "1") // 1 second window
 
 		// Use main constructor that reads from environment
-		logger := NewLogger().Build()
+		logger := NewLoggerBuilder().Build()
 		defer logger.Close()
 
 		// The grouper should be initialized with 1 second window from env var
-		if logger.writer.grouper.windowDur != time.Second {
-			tt.Errorf("Expected 1 second window from env var, got %v", logger.writer.grouper.windowDur)
+		if logger.writer.grouper.windowDuration != time.Second {
+			tt.Errorf("Expected 1 second window from env var, got %v", logger.writer.grouper.windowDuration)
 		}
 	})
 }
@@ -619,7 +619,7 @@ func TestEventGrouperPerformance(t *testing.T) {
 		// Test that grouping doesn't significantly impact performance
 		groupWindow := 100 * time.Millisecond
 
-		logger := NewLogger().WithGroupWindow(groupWindow).Build()
+		logger := NewLoggerBuilder().WithGroupWindow(groupWindow).Build()
 		defer logger.Close()
 
 		start := time.Now()
@@ -733,9 +733,9 @@ func TestUnbufferedLogging(t *testing.T) {
 		var buf bytes.Buffer
 		// Use reflection or interface to get the underlying writer
 		// For this test, we'll create a fresh logger with our output buffer
-		unbufferedLogger := NewLogger().
+		unbufferedLogger := NewLoggerBuilder().
 			WithoutBuffering().
-			AsJSON().
+			WithLogFormat(LOG_FORMAT_JSON).
 			WithOutput(&buf).
 			Build()
 		defer unbufferedLogger.Close()
@@ -773,29 +773,29 @@ func TestUnbufferedLogging(t *testing.T) {
 
 	t.Run("environment_variable_disable", func(tt *testing.T) {
 		// Test disabling buffering via environment variable
-		originalEnv := os.Getenv(ENV_LOG_DISABLE_BUFFERING)
+		originalEnv := os.Getenv(ENV_LOG_BUFFERING_DISABLED)
 		defer func() {
 			if originalEnv == "" {
-				os.Unsetenv(ENV_LOG_DISABLE_BUFFERING)
+				os.Unsetenv(ENV_LOG_BUFFERING_DISABLED)
 			} else {
-				os.Setenv(ENV_LOG_DISABLE_BUFFERING, originalEnv)
+				os.Setenv(ENV_LOG_BUFFERING_DISABLED, originalEnv)
 			}
 		}()
 
-		os.Setenv(ENV_LOG_DISABLE_BUFFERING, "true")
-		logger := NewLogger().Build()
+		os.Setenv(ENV_LOG_BUFFERING_DISABLED, "true")
+		logger := NewLoggerBuilder().Build()
 		testUnbufferedBehavior(tt, logger, "environment_variable")
 	})
 
 	t.Run("explicit_unbuffered", func(tt *testing.T) {
 		// Test explicitly creating unbuffered logger
-		logger := NewLogger().WithoutBuffering().Build()
+		logger := NewLoggerBuilder().WithoutBuffering().Build()
 		testUnbufferedBehavior(tt, logger, "explicit_unbuffered")
 	})
 
 	t.Run("unbuffered_without_grouping", func(tt *testing.T) {
 		// Test unbuffered logger without grouping
-		logger := NewLogger().WithoutBuffering().WithoutGrouping().Build()
+		logger := NewLoggerBuilder().WithoutBuffering().WithGroupWindow(-1).Build()
 		testUnbufferedBehavior(tt, logger, "unbuffered_without_grouping")
 	})
 
@@ -803,15 +803,15 @@ func TestUnbufferedLogging(t *testing.T) {
 		// Test that unbuffered mode writes immediately vs buffered mode
 		var unbufferedBuf, bufferedBuf bytes.Buffer
 
-		unbufferedLogger := NewLogger().
+		unbufferedLogger := NewLoggerBuilder().
 			WithoutBuffering().
-			AsJSON().
+			WithLogFormat(LOG_FORMAT_JSON).
 			WithOutput(&unbufferedBuf).
 			Build()
 		defer unbufferedLogger.Close()
 
-		bufferedLogger := NewLogger().
-			AsJSON().
+		bufferedLogger := NewLoggerBuilder().
+			WithLogFormat(LOG_FORMAT_JSON).
 			WithOutput(&bufferedBuf).
 			Build()
 		defer bufferedLogger.Close()
@@ -843,11 +843,11 @@ func TestUnbufferedLogging(t *testing.T) {
 		// Test that unbuffered mode still respects rate limiting
 		var buf bytes.Buffer
 
-		logger := NewLogger().
+		logger := NewLoggerBuilder().
 			WithoutBuffering().
 			WithRateLimit(2).
 			WithRateBurst(1).
-			AsJSON().
+			WithLogFormat(LOG_FORMAT_JSON).
 			WithOutput(&buf).
 			Build()
 		defer logger.Close()
@@ -925,7 +925,7 @@ func TestGlobalLogger(t *testing.T) {
 	t.Run("default_global_logger", func(tt *testing.T) {
 		// Reset to defaults
 		globalConfigMutex.Lock()
-		globalLoggerBuilder = NewLogger()
+		globalLoggerBuilder = NewLoggerBuilder()
 		globalLogger.Store(nil)
 		globalConfigMutex.Unlock()
 
@@ -952,12 +952,12 @@ func TestGlobalLogger(t *testing.T) {
 	t.Run("custom_global_logger_via_builder", func(tt *testing.T) {
 		// Reset to defaults
 		globalConfigMutex.Lock()
-		globalLoggerBuilder = NewLogger()
+		globalLoggerBuilder = NewLoggerBuilder()
 		globalLogger.Store(nil)
 		globalConfigMutex.Unlock()
 
 		// Set a custom global logger builder
-		customBuilder := NewLogger().
+		customBuilder := NewLoggerBuilder().
 			WithBufferSize(500).
 			WithRateLimit(100).
 			WithRateBurst(50).
@@ -985,12 +985,12 @@ func TestGlobalLogger(t *testing.T) {
 
 		// Reset to defaults
 		globalConfigMutex.Lock()
-		globalLoggerBuilder = NewLogger()
+		globalLoggerBuilder = NewLoggerBuilder()
 		globalLogger.Store(nil)
 		globalConfigMutex.Unlock()
 
 		// Create a custom logger and set it directly
-		customLogger := NewLogger().
+		customLogger := NewLoggerBuilder().
 			WithOutput(&buf).
 			WithBufferSize(300).
 			Build()
@@ -1017,12 +1017,12 @@ func TestGlobalLogger(t *testing.T) {
 	t.Run("global_logger_builder_accessor", func(tt *testing.T) {
 		// Reset to defaults
 		globalConfigMutex.Lock()
-		globalLoggerBuilder = NewLogger()
+		globalLoggerBuilder = NewLoggerBuilder()
 		globalLogger.Store(nil)
 		globalConfigMutex.Unlock()
 
 		// Set a custom builder
-		customBuilder := NewLogger().WithBufferSize(777)
+		customBuilder := NewLoggerBuilder().WithBufferSize(777)
 		SetGlobalLoggerBuilder(customBuilder)
 
 		// Get the builder back
@@ -1074,7 +1074,7 @@ func TestGlobalLoggerFormatAndLevelChanges(t *testing.T) {
 
 		// Reset and set up custom global logger builder with specific settings
 		globalConfigMutex.Lock()
-		globalLoggerBuilder = NewLogger().
+		globalLoggerBuilder = NewLoggerBuilder().
 			WithOutput(&buf).
 			WithBufferSize(456).
 			WithRateLimit(200).
@@ -1126,7 +1126,7 @@ func TestGlobalLoggerFormatAndLevelChanges(t *testing.T) {
 
 		// Reset and set up custom global logger builder
 		globalConfigMutex.Lock()
-		globalLoggerBuilder = NewLogger().
+		globalLoggerBuilder = NewLoggerBuilder().
 			WithOutput(&buf).
 			WithBufferSize(789).
 			WithRateLimit(150).
@@ -1176,7 +1176,7 @@ func TestGlobalLoggerFormatAndLevelChanges(t *testing.T) {
 
 		// Reset and set up custom global logger builder
 		globalConfigMutex.Lock()
-		globalLoggerBuilder = NewLogger().
+		globalLoggerBuilder = NewLoggerBuilder().
 			WithOutput(&buf).
 			WithBufferSize(321).
 			WithRateLimit(300).
@@ -1270,7 +1270,7 @@ func TestGlobalLoggerConcurrency(t *testing.T) {
 
 		// Reset to known state
 		globalConfigMutex.Lock()
-		globalLoggerBuilder = NewLogger().WithOutput(&buf)
+		globalLoggerBuilder = NewLoggerBuilder().WithOutput(&buf)
 		globalLogger.Store(nil)
 		globalConfigMutex.Unlock()
 
@@ -1317,7 +1317,7 @@ func TestGlobalLoggerConcurrency(t *testing.T) {
 
 		// Reset to known state
 		globalConfigMutex.Lock()
-		globalLoggerBuilder = NewLogger().WithOutput(&buf).WithBufferSize(1000)
+		globalLoggerBuilder = NewLoggerBuilder().WithOutput(&buf).WithBufferSize(1000)
 		globalLogger.Store(nil)
 		globalConfigMutex.Unlock()
 
@@ -1422,7 +1422,7 @@ func TestGlobalLoggerEdgeCases(t *testing.T) {
 
 	t.Run("invalid_format_error_handling", func(tt *testing.T) {
 		// Reset to known state
-		globalLoggerBuilder = NewLogger()
+		globalLoggerBuilder = NewLoggerBuilder()
 		globalLogger.Store(nil)
 
 		// Try to set invalid format
@@ -1442,7 +1442,7 @@ func TestGlobalLoggerEdgeCases(t *testing.T) {
 
 	t.Run("invalid_level_error_handling", func(tt *testing.T) {
 		// Reset to known state
-		globalLoggerBuilder = NewLogger()
+		globalLoggerBuilder = NewLoggerBuilder()
 		globalLogger.Store(nil)
 
 		// Try to set invalid level
@@ -1463,7 +1463,7 @@ func TestGlobalLoggerEdgeCases(t *testing.T) {
 		var buf bytes.Buffer
 
 		// Set up global logger
-		globalLoggerBuilder = NewLogger().WithOutput(&buf)
+		globalLoggerBuilder = NewLoggerBuilder().WithOutput(&buf)
 		globalLogger.Store(nil)
 
 		// Get and use the logger
@@ -1480,7 +1480,7 @@ func TestGlobalLoggerEdgeCases(t *testing.T) {
 		}
 
 		// But we can force a new logger by using SetGlobalLoggerBuilder
-		SetGlobalLoggerBuilder(NewLogger().WithOutput(&buf))
+		SetGlobalLoggerBuilder(NewLoggerBuilder().WithOutput(&buf))
 		logger3 := Logger()
 		if logger3 == logger {
 			tt.Error("Expected new logger instance after SetGlobalLoggerBuilder")
@@ -1503,7 +1503,7 @@ func TestDropReportIntervalBuilder(t *testing.T) {
 	var buf bytes.Buffer
 
 	// Test custom drop report interval via builder
-	logger := NewLogger().
+	logger := NewLoggerBuilder().
 		WithOutput(&buf).
 		WithBufferSize(1).                              // Small buffer to force drops
 		WithDropReportInterval(500 * time.Millisecond). // 0.5 second interval

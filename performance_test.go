@@ -28,7 +28,7 @@ func BenchmarkZeroCopyLogger(b *testing.B) {
 	_ = os.Setenv(ENV_LOG_RATE_BURST, "10000")  // High burst for benchmarking
 
 	// Create custom logger with buffer output using builder pattern
-	logger := NewLogger().WithOutput(&buf).Build()
+	logger := NewLoggerBuilder().WithOutput(&buf).Build()
 	defer logger.Close()
 
 	// Restore environment variables
@@ -92,7 +92,7 @@ func BenchmarkEventGrouping(b *testing.B) {
 
 	b.Run("with_grouping", func(bb *testing.B) {
 		groupWindow := 100 * time.Millisecond
-		logger := NewLogger().WithGroupWindow(groupWindow).Build()
+		logger := NewLoggerBuilder().WithGroupWindow(groupWindow).Build()
 		defer logger.Close()
 
 		bb.ResetTimer()
@@ -104,7 +104,7 @@ func BenchmarkEventGrouping(b *testing.B) {
 	})
 
 	b.Run("without_grouping", func(bb *testing.B) {
-		logger := NewLogger().WithGroupWindow(-1).Build() // No grouping
+		logger := NewLoggerBuilder().WithGroupWindow(-1).Build() // No grouping
 		defer logger.Close()
 
 		bb.ResetTimer()
@@ -132,7 +132,7 @@ func BenchmarkGlobalLoggerAccess(b *testing.B) {
 	// Comparison with a theoretical mutex-based approach
 	b.Run("mutex_based_comparison", func(bb *testing.B) {
 		mutexLogger := &mutexBasedGlobalLogger{
-			logger: NewLogger().Build(),
+			logger: NewLoggerBuilder().Build(),
 		}
 		defer mutexLogger.logger.Close()
 
@@ -177,7 +177,7 @@ func BenchmarkGlobalLoggerWithRealLogging(b *testing.B) {
 
 	// Create a custom logger with buffer output for benchmarking
 	originalLogger := globalLogger.Load()
-	testLogger := NewLogger().WithOutput(&buf).Build()
+	testLogger := NewLoggerBuilder().WithOutput(&buf).Build()
 	globalLogger.Store(testLogger)
 
 	// Restore original logger after benchmark
@@ -245,7 +245,7 @@ func BenchmarkGlobalLoggerConcurrentAccess(b *testing.B) {
 				if readCount%1000 == 0 {
 					// Occasional write operation (1 in 1000)
 					originalLogger := Logger()
-					newLogger := NewLogger().Build()
+					newLogger := NewLoggerBuilder().Build()
 					globalLogger.Store(newLogger)
 					// Restore original (in real usage, you wouldn't do this)
 					globalLogger.Store(originalLogger)

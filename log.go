@@ -20,7 +20,7 @@
 // # Environment Variables
 //
 // The following environment variables control logging behavior:
-//   - LOG_DISABLE_BUFFERING: Set to "true", "1", or "yes" to disable buffering
+//   - LOG_BUFFERING_DISABLED: Set to "true", "1", or "yes" to disable buffering
 //   - LOG_BUFFER_SIZE: Buffer size for buffered mode (default: 100000)
 //   - LOG_RATE_LIMIT: Rate limit in messages per second (default: 50000)
 //   - LOG_RATE_BURST: Burst size for rate limiting (default: 10000)
@@ -33,13 +33,13 @@
 //
 // Basic usage with default configuration:
 //
-//	logger := log.NewLogger().Build()
+//	logger := log.NewLoggerBuilder().Build()
 //	logger.Info().Msg("This is a buffered log message")
 //	logger.Close() // Flush remaining messages
 //
 // Configure with builder pattern:
 //
-//	logger := log.NewLogger().
+//	logger := log.NewLoggerBuilder().
 //		WithoutBuffering().
 //		WithGroupWindow(5 * time.Second).
 //		AsJSON().
@@ -48,25 +48,24 @@
 //
 // Disable buffering via environment variable:
 //
-//	os.Setenv("LOG_DISABLE_BUFFERING", "true")
-//	logger := log.NewLogger().Build()
+//	os.Setenv(log.ENV_LOG_BUFFERING_DISABLED, "true")
+//	logger := log.NewLoggerBuilder().Build()
 //	logger.Info().Msg("This message is written immediately")
 //
 // Create unbuffered logger with builder:
 //
-//	logger := log.NewLogger().WithoutBuffering().Build()
+//	logger := log.NewLoggerBuilder().WithoutBuffering().Build()
 //	logger.Info().Msg("This message is written immediately")
 //
 // Unbuffered with grouping disabled:
 //
-//	logger := log.NewLogger().WithoutBuffering().WithoutGrouping().Build()
+//	logger := log.NewLoggerBuilder().WithoutBuffering().WithoutGrouping().Build()
 //	logger.Info().Msg("No buffering, no grouping")
 package log
 
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"hash/fnv"
 	"io"
 	"os"
@@ -84,28 +83,6 @@ const (
 	ENV_LOG_LEVEL = "LOG_LEVEL"
 	// ENV_LOG_FORMAT is the environment variable for the log format.
 	ENV_LOG_FORMAT = "LOG_FORMAT"
-	// ENV_LOG_BUFFER_SIZE is the environment variable for the log buffer size.
-	ENV_LOG_BUFFER_SIZE = "LOG_BUFFER_SIZE"
-	// ENV_LOG_RATE_LIMIT is the environment variable for the log rate limit.
-	ENV_LOG_RATE_LIMIT = "LOG_RATE_LIMIT" // messages per second
-	// ENV_LOG_RATE_BURST is the environment variable for the log rate burst size.
-	ENV_LOG_RATE_BURST = "LOG_RATE_BURST" // burst size
-	// ENV_LOG_DROP_REPORT_INTERVAL is the environment variable for the log drop report interval.
-	ENV_LOG_DROP_REPORT_INTERVAL = "LOG_DROP_REPORT_INTERVAL" // seconds between drop reports
-	// ENV_LOG_GROUP_WINDOW is the environment variable for the log event grouping window.
-	ENV_LOG_GROUP_WINDOW = "LOG_GROUP_WINDOW" // seconds for event grouping window
-	// ENV_LOG_DISABLE_BUFFERING is the environment variable to disable buffering.
-	ENV_LOG_DISABLE_BUFFERING = "LOG_DISABLE_BUFFERING" // set to "true" to disable buffering
-	// DEFAULT_BUFFER_SIZE is the default buffer size for the logger.
-	DEFAULT_BUFFER_SIZE = 100000 // High throughput: 100K buffer
-	// DEFAULT_RATE_LIMIT is the default rate limit for the logger in messages per second.
-	DEFAULT_RATE_LIMIT = 50000 // High throughput: 50K msgs/sec
-	// DEFAULT_RATE_BURST is the default rate burst for the logger.
-	DEFAULT_RATE_BURST = 10000 // High throughput: 10K burst
-	// DEFAULT_DROP_REPORT_INTERVAL is the default interval in seconds for reporting dropped messages.
-	DEFAULT_DROP_REPORT_INTERVAL = 10 // Report drops every 10 seconds
-	// DEFAULT_GROUP_WINDOW is the default window in seconds for grouping similar events.
-	DEFAULT_GROUP_WINDOW = 1 // Group events over 1 second window
 	// KEY_PKG is the key used for the package name in log fields.
 	KEY_PKG = "pkg"
 )
@@ -150,23 +127,23 @@ type eventWindow struct {
 
 // eventGrouper manages event grouping within time windows.
 type eventGrouper struct {
-	events      sync.Map // Use sync.Map for better concurrent performance
-	windowDur   time.Duration
-	cleanupChan chan struct{}
-	wg          sync.WaitGroup
-	writer      io.Writer // Reference to output writer for emitting grouped messages
+	events         sync.Map // Use sync.Map for better concurrent performance
+	windowDuration time.Duration
+	cleanupChan    chan struct{}
+	wg             sync.WaitGroup
+	writer         io.Writer // Reference to output writer for emitting grouped messages
 }
 
 // newEventGrouper creates a new event grouper with the specified window duration.
-func newEventGrouper(windowDur time.Duration, writer io.Writer) *eventGrouper {
+func newEventGrouper(windowDuration time.Duration, writer io.Writer) *eventGrouper {
 	eg := &eventGrouper{
-		windowDur:   windowDur,
-		cleanupChan: make(chan struct{}),
-		writer:      writer,
+		windowDuration: windowDuration,
+		cleanupChan:    make(chan struct{}),
+		writer:         writer,
 	}
 
 	// Start cleanup goroutine if grouping is enabled
-	if windowDur > 0 {
+	if windowDuration > 0 {
 		eg.wg.Add(1)
 		go eg.cleanupExpired()
 	}
@@ -181,6 +158,7 @@ type CustomLogger struct {
 	writer     *BufferedRateLimitedWriter
 	bufferSize int
 	once       sync.Once
+	logFormat  LogFormat
 }
 
 // BufferedRateLimitedWriter wraps an io.Writer with rate limiting and buffering.
@@ -216,45 +194,6 @@ type BufferedRateLimitedWriter struct {
 
 	// Buffering control
 	bufferingDisabled bool
-}
-
-// newBufferedRateLimitedWriter is the internal constructor that handles all options.
-func newBufferedRateLimitedWriter(target io.Writer, bufferSize, rateLimit, rateBurst int, groupWindow, dropReportInterval time.Duration, bufferingDisabled bool) *BufferedRateLimitedWriter {
-	// Get drop report interval from parameter or environment fallback
-	if dropReportInterval <= 0 {
-		dropReportInterval = time.Duration(
-			getEnvInt(ENV_LOG_DROP_REPORT_INTERVAL, DEFAULT_DROP_REPORT_INTERVAL),
-		) * time.Second
-	}
-
-	// Get group window from environment if not explicitly provided (groupWindow == 0)
-	if groupWindow == 0 {
-		groupWindow = time.Duration(getEnvInt(ENV_LOG_GROUP_WINDOW, DEFAULT_GROUP_WINDOW)) * time.Second
-	}
-	// If groupWindow is negative, it means grouping is explicitly disabled
-	if groupWindow < 0 {
-		groupWindow = 0
-	}
-
-	w := &BufferedRateLimitedWriter{
-		target:             target,
-		limiter:            rate.NewLimiter(rate.Limit(rateLimit), rateBurst),
-		buffer:             make(chan []byte, bufferSize),
-		closeSignal:        make(chan struct{}), // Initialize closeSignal
-		dropReportInterval: dropReportInterval,
-		grouper:            newEventGrouper(groupWindow, target),
-		bufferingDisabled:  bufferingDisabled,
-	}
-
-	// Create cancellable context for rate limiter
-	w.ctx, w.cancelFunc = context.WithCancel(context.Background())
-
-	// Pre-compute static parts of drop report message for performance
-	w.intervalSecondsStr = strconv.FormatFloat(w.dropReportInterval.Seconds(), 'f', 0, 64)
-	w.dropReportPrefix = []byte(`{"time":"`)
-	w.dropReportSuffix = []byte(`","level":"warn","message":"Log messages dropped due to backpressure","dropped_count":`)
-
-	return w
 }
 
 func (w *BufferedRateLimitedWriter) startProcessor() {
@@ -493,31 +432,9 @@ func (l *CustomLogger) Flush() {
 	}
 }
 
-// getLogLevel parses and validates the log level from environment
-func getLogLevel() zerolog.Level {
-	logLevel, err := ParseLevel(os.Getenv(ENV_LOG_LEVEL))
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Error parsing log level: %v. Using default info level.\\n", err)
-		logLevel = InfoLevel
-	}
-	if logLevel == NoLevel {
-		logLevel = InfoLevel
-	}
-	return logLevel
-}
-
-// getFormatBasedOutput determines output writer based on log format
-func getFormatBasedOutput() io.Writer {
-	logFormat, _ := ParseLogFormat(os.Getenv(ENV_LOG_FORMAT))
-
-	var output io.Writer = os.Stderr
-	if logFormat == LOG_FORMAT_CONSOLE {
-		output = zerolog.ConsoleWriter{
-			Out:        PreferredWriter(),
-			TimeFormat: time.RFC3339,
-		}
-	}
-	return output
+// LogFormat returns the log format of the CustomLogger.
+func (l *CustomLogger) LogFormat() LogFormat {
+	return l.logFormat
 }
 
 // PreferredWriter returns an io.Writer that writes to both a new bytes.Buffer and os.Stderr.
@@ -536,25 +453,6 @@ func Hash(data []byte) uint64 {
 	h := fnv.New64a()
 	_, _ = h.Write(data)
 	return h.Sum64()
-}
-
-// GroupEvents groups the given events by their hash value computed from the
-// event data. It returns a map where the key is the hash value and the value
-// is a slice of events (byte slices) that correspond to the same hash.
-func GroupEvents(events [][]byte) map[uint64][][]byte {
-	grouped := make(map[uint64][][]byte)
-	for _, event := range events {
-		hash := Hash(event)
-		grouped[hash] = append(grouped[hash], event)
-	}
-	return grouped
-}
-
-// EventHash is a helper function that computes the hash of an event and returns
-// it as a string. This can be used for logging or debugging purposes to identify
-// events.
-func EventHash(event []byte) string {
-	return fmt.Sprintf("%x", Hash(event))
 }
 
 // hashMessage creates a hash of the log message content for grouping.
@@ -585,7 +483,7 @@ func (eg *eventGrouper) extractLevel(data []byte) string {
 // shouldGroup determines if an event should be grouped and returns the modified message.
 // Returns the message to write and whether it was grouped.
 func (eg *eventGrouper) shouldGroup(data []byte) ([]byte, bool) {
-	if eg.windowDur <= 0 {
+	if eg.windowDuration <= 0 {
 		return data, false
 	}
 
@@ -599,7 +497,7 @@ func (eg *eventGrouper) shouldGroup(data []byte) ([]byte, bool) {
 		window := value.(*eventWindow)
 
 		// Check if the event is within the time window
-		if now.Sub(window.firstSeen) <= eg.windowDur {
+		if now.Sub(window.firstSeen) <= eg.windowDuration {
 			// Within window, increment count atomically and suppress this message
 			window.count.Add(1)
 			return nil, true
@@ -662,12 +560,12 @@ func (eg *eventGrouper) createGroupedMessage(window *eventWindow) []byte {
 
 	// Add count and grouped indicator
 	countStr := strconv.FormatUint(count, 10)
-	windowDurStr := eg.windowDur.String()
+	windowDurationStr := eg.windowDuration.String()
 
 	msg = append(msg, []byte(`,"group_count":`)...)
 	msg = append(msg, countStr...)
 	msg = append(msg, []byte(`,"group_window":"`)...)
-	msg = append(msg, windowDurStr...)
+	msg = append(msg, windowDurationStr...)
 	msg = append(msg, []byte(`","group_first":"`)...)
 	msg = append(msg, window.firstSeen.Format(time.RFC3339)...)
 	msg = append(msg, []byte(`"}`)...)
@@ -680,7 +578,7 @@ func (eg *eventGrouper) createGroupedMessage(window *eventWindow) []byte {
 func (eg *eventGrouper) cleanupExpired() {
 	defer eg.wg.Done()
 
-	ticker := time.NewTicker(eg.windowDur / 2) // Cleanup twice per window
+	ticker := time.NewTicker(eg.windowDuration / 2) // Cleanup twice per window
 	defer ticker.Stop()
 
 	for {
@@ -703,7 +601,7 @@ func (eg *eventGrouper) performCleanup() {
 	// Use Range to iterate over sync.Map
 	eg.events.Range(func(key, value interface{}) bool {
 		window := value.(*eventWindow)
-		if now.Sub(window.firstSeen) > eg.windowDur {
+		if now.Sub(window.firstSeen) > eg.windowDuration {
 			// Create grouped message for expired window if it has multiple events
 			if window.count.Load() > 1 {
 				groupedMsg := eg.createGroupedMessage(window)
@@ -728,7 +626,7 @@ func (eg *eventGrouper) performCleanup() {
 func (eg *eventGrouper) close() [][]byte {
 	var pendingMessages [][]byte
 
-	if eg.windowDur > 0 {
+	if eg.windowDuration > 0 {
 		// Collect all pending grouped messages before shutdown
 		eg.events.Range(func(key, value interface{}) bool {
 			window := value.(*eventWindow)
